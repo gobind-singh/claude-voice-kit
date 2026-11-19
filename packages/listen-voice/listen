@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""listen-voice: local speech-to-text (talks to the listen-voice service; starts it if needed).
+
+  listen-voice -f speech.wav            transcribe a file
+  listen-voice --start / --stop         push-to-talk: start recording, then stop and print the text
+  listen-voice --cancel                 stop recording and discard
+  listen-voice --record 5               record 5 seconds from the microphone, then print the text
+  listen-voice --raw ...                print the model's raw text (no polishing)
+  listen-voice --json ...               print the full JSON result (text, raw, seconds, ms)
+  listen-voice --wake on|off            hands-free: listen continuously for "hey claude …" (see config "wake")
+  listen-voice --status
+"""
+import argparse, json, os, socket, subprocess, sys, time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+SOCK = os.path.expanduser("~/.local/state/listen-voice/listend.sock")
+
+
+def send(req, timeout=120):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect(SOCK)
+    s.sendall((json.dumps(req) + "\n").encode())
+    data = b""
+    while not data.endswith(b"\n"):
+        chunk = s.recv(65536)
+        if not chunk:
+            break
+        data += chunk
+    s.close()
+    return json.loads(data)
+
+
+def request(req, timeout=120, autostart=True):
+    try:
+        return send(req, timeout)
+    except (FileNotFoundError, ConnectionRefusedError):
+        if not autostart:
+            raise
+        os.makedirs(os.path.dirname(SOCK), exist_ok=True)
+        log = open(os.path.join(os.path.dirname(SOCK), "listend.log"), "a")
+        subprocess.Popen([os.path.join(HERE, ".venv", "bin", "python"), os.path.join(HERE, "listend.py")],
+                         stdout=subprocess.DEVNULL, stderr=log, start_new_session=True,
+                         env={**os.environ, "HF_HUB_OFFLINE": "1", "PYTHONWARNINGS": "ignore"})
+        for _ in range(60):
+            time.sleep(0.25)
+            try:
+                return send(req, timeout)
+            except (FileNotFoundError, ConnectionRefusedError):
+                continue
+        sys.exit("listen: service did not start (see ~/.local/state/listen-voice/listend.log)")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="listen-voice", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("-f", "--file")
+    p.add_argument("--start", action="store_true")
+    p.add_argument("--stop", action="store_true")
+    p.add_argument("--cancel", action="store_true")
+    p.add_argument("--record", type=float, metavar="SECONDS")
+    p.add_argument("--status", action="store_true")
+    p.add_argument("--wake", choices=["on", "off"])
+    p.add_argument("--raw", action="store_true")
+    p.add_argument("--json", action="store_true")
+    a = p.parse_args()
+
+    if a.status:
+        try:
+            return print(json.dumps(send({"cmd": "status"}, 5), indent=2))
+        except OSError:
+            return print('{"running": false}')
+    if a.wake:
+        try:
+            r = request({"cmd": "wake", "on": a.wake == "on"}, autostart=a.wake == "on")
+        except OSError:
+            r = {"ok": True}
+        return print("wake mode", a.wake if r.get("ok") else f"error: {r.get('error')}")
+    if a.cancel:
+        try:
+            send({"cmd": "cancel"}, 5)
+        except OSError:
+            pass
+        return
+    if a.start:
+        r = request({"cmd": "start"})
+    elif a.stop:
+        r = request({"cmd": "stop", "raw": a.raw}, autostart=False)
+    elif a.record:
+        request({"cmd": "start"})
+        time.sleep(a.record)
+        r = request({"cmd": "stop", "raw": a.raw})
+    elif a.file:
+        r = request({"cmd": "transcribe", "path": os.path.abspath(a.file), "raw": a.raw})
+    else:
+        p.print_help()
+        return
+    if not r.get("ok"):
+        sys.exit(f"listen: {r.get('error')}")
+    if a.json:
+        print(json.dumps(r))
+    elif "text" in r:
+        print(r["text"])
+
+
+if __name__ == "__main__":
+    main()

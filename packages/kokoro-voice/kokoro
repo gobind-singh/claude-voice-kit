@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""kokoro: speak text with a local Kokoro voice (talks to the kokoro-voice daemon).
+
+  kokoro "Hello there"            speak text
+  kokoro -f notes.md              speak a file (markdown is cleaned up)
+  pbpaste | kokoro                speak stdin
+  kokoro -o out.wav "Hello"       save audio to a file instead of playing
+  kokoro -i "Now!"                interrupt whatever is playing
+  kokoro -u "Alert"               urgent: jump ahead of queued speech
+  kokoro --voice bf_emma --speed 1.2 "text"   one-off voice/speed
+  kokoro --stop | --next | --replay [N] | --status | --voices
+  kokoro --tag NAME "text"        label speech (shown as "tag" in --status while it plays)
+  kokoro --polite "text"          don't talk over other apps: if music/video/a call is using audio,
+                                  hold the message and notify instead (config "when_other_audio")
+  kokoro --audio-check            which other apps count as "using audio" right now
+  kokoro --is-speaking            exit code 0 if speech is playing or queued, 1 if silent (for scripts)
+  kokoro --held                   list held messages
+  kokoro --play-held [ID]         play held messages (default: all) · --drop-held [ID] discards them
+  kokoro --set-voice am_michael | --set-speed 1.1   change defaults
+  kokoro --set-idle-unload 10     free the model's memory after N quiet minutes (0 = never)
+  kokoro --set-idle-exit 20       quit the whole service after N quiet minutes (0 = never);
+                                  it restarts automatically on the next request
+"""
+import argparse, json, os, socket, subprocess, sys, time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+SOCK = os.path.expanduser("~/.local/state/kokoro-voice/voiced.sock")
+CONFIG = os.path.expanduser("~/.config/kokoro-voice/config.json")
+LABEL = "com.claude-voice-kit.kokoro"
+PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{LABEL}.plist")
+
+
+def send(req, timeout=300):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect(SOCK)
+    s.sendall((json.dumps(req) + "\n").encode())
+    data = b""
+    while not data.endswith(b"\n"):
+        chunk = s.recv(65536)
+        if not chunk:
+            break
+        data += chunk
+    s.close()
+    return json.loads(data)
+
+
+def start_daemon():
+    if os.path.exists(PLIST):
+        subprocess.run(["launchctl", "kickstart", f"gui/{os.getuid()}/{LABEL}"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        log_path = os.path.join(os.path.dirname(SOCK), "voiced.log")
+        os.makedirs(os.path.dirname(SOCK), exist_ok=True)
+        subprocess.Popen([os.path.join(HERE, ".venv/bin/python"), os.path.join(HERE, "voiced.py")],
+                         stdout=subprocess.DEVNULL, stderr=open(log_path, "a"),
+                         start_new_session=True)
+
+
+def request(req, timeout=300):
+    try:
+        return send(req, timeout)
+    except (FileNotFoundError, ConnectionRefusedError):
+        start_daemon()
+        for _ in range(60):
+            time.sleep(0.5)
+            try:
+                return send(req, timeout)
+            except (FileNotFoundError, ConnectionRefusedError):
+                continue
+        raise SystemExit("kokoro: voice service did not start (see ~/.local/state/kokoro-voice/voiced.log)")
+
+
+def set_config(**kw):
+    cfg = {}
+    try:
+        cfg = json.load(open(CONFIG))
+    except Exception:
+        pass
+    cfg.update(kw)
+    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+    json.dump(cfg, open(CONFIG, "w"), indent=2)
+    print(json.dumps(cfg))
+
+
+def main():
+    p = argparse.ArgumentParser(prog="kokoro", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("text", nargs="*")
+    p.add_argument("-f", "--file")
+    p.add_argument("-o", "--out", help="write a .wav file instead of playing")
+    p.add_argument("-i", "--interrupt", action="store_true")
+    p.add_argument("-u", "--urgent", action="store_true")
+    p.add_argument("--raw", action="store_true", help="don't strip markdown")
+    p.add_argument("--voice")
+    p.add_argument("--speed", type=float)
+    p.add_argument("--stop", action="store_true")
+    p.add_argument("--next", action="store_true", help="skip to the next section")
+    p.add_argument("--tag")
+    p.add_argument("--polite", action="store_true", help="hold instead of speaking over other audio")
+    p.add_argument("--actions-json", help='notification buttons for a held message: [{"label","command"}]')
+    p.add_argument("--held", action="store_true")
+    p.add_argument("--audio-check", action="store_true")
+    p.add_argument("--is-speaking", action="store_true")
+    p.add_argument("--play-held", nargs="?", const="all", metavar="ID")
+    p.add_argument("--drop-held", nargs="?", const="all", metavar="ID")
+    p.add_argument("--replay", nargs="?", const=1, type=int, metavar="N")
+    p.add_argument("--status", action="store_true")
+    p.add_argument("--voices", action="store_true")
+    p.add_argument("--set-voice")
+    p.add_argument("--set-speed", type=float)
+    p.add_argument("--set-idle-unload", type=float, metavar="MIN")
+    p.add_argument("--set-idle-exit", type=float, metavar="MIN")
+    a = p.parse_args()
+
+    if a.set_voice or a.set_speed or a.set_idle_unload is not None or a.set_idle_exit is not None:
+        kw = {}
+        if a.set_idle_exit is not None:
+            kw["idle_exit_minutes"] = a.set_idle_exit
+        if a.set_idle_unload is not None:
+            kw["idle_unload_minutes"] = a.set_idle_unload
+        if a.set_voice:
+            kw["voice"] = a.set_voice
+        if a.set_speed:
+            kw["speed"] = a.set_speed
+        return set_config(**kw)
+    if a.stop:
+        try:
+            send({"cmd": "stop"}, 5)
+        except OSError:
+            pass
+        return
+    if a.is_speaking:
+        try:
+            st = send({"cmd": "status"}, 3)
+            sys.exit(0 if st.get("speaking") or st.get("queued") else 1)
+        except OSError:
+            sys.exit(1)                                # service not running: silent
+    if a.audio_check:
+        r = request({"cmd": "audio_check"})
+        if not r.get("supported"):
+            return print("can't tell on this macOS (needs 14.2+): messages are always spoken")
+        apps = r.get("apps") or []
+        print("\n".join(f"{x['name']} (pid {x['pid']}): {'playing' if x['output'] else ''}"
+                        f"{' + ' if x['output'] and x['input'] else ''}{'microphone' if x['input'] else ''}"
+                        for x in apps) or "quiet: no other app is using audio")
+        return
+    if a.held:
+        try:
+            items = send({"cmd": "held"}, 5).get("held", [])
+        except OSError:
+            items = []
+        for h in items:
+            print(f"{h['id']}  {time.strftime('%H:%M', time.localtime(h['created']))}  [{h.get('why')}]  {h['text'][:90]}")
+        return
+    if a.play_held or a.drop_held:
+        cmd = "play_held" if a.play_held else "drop_held"
+        r = request({"cmd": cmd, "id": a.play_held or a.drop_held})
+        return print(f"{r.get('count', 0)} message(s) {'queued' if a.play_held else 'dropped'}")
+    if a.next:
+        try:
+            send({"cmd": "next"}, 5)
+        except OSError:
+            pass
+        return
+    if a.status:
+        try:
+            return print(json.dumps(send({"cmd": "status"}, 5), indent=2))
+        except OSError:
+            return print('{"running": false}')
+    if a.voices:
+        return print("\n".join(request({"cmd": "voices"})["voices"]))
+    if a.replay:
+        r = request({"cmd": "replay", "n": a.replay})
+    else:
+        if a.file:
+            text = open(a.file, encoding="utf-8", errors="ignore").read()
+        elif a.text:
+            text = " ".join(a.text)
+        elif not sys.stdin.isatty():
+            text = sys.stdin.read()
+        else:
+            p.print_help()
+            return
+        req = {"cmd": "synth" if a.out else "speak", "text": text, "clean": not a.raw,
+               "voice": a.voice, "speed": a.speed, "urgent": a.urgent, "interrupt": a.interrupt, "tag": a.tag,
+               "polite": a.polite, "actions": json.loads(a.actions_json) if a.actions_json else []}
+        if a.out:
+            req["out"] = os.path.abspath(a.out)
+        r = request(req)
+    if not r.get("ok"):
+        raise SystemExit(f"kokoro: {r.get('error')}")
+    if a.out:
+        print(r["out"])
+
+
+if __name__ == "__main__":
+    main()

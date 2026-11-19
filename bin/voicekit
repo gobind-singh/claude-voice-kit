@@ -1,0 +1,497 @@
+#!/usr/bin/env python3
+"""voicekit: install, check and manage claude-voice-kit.
+
+  voicekit install [--no-hotkeys]   install or update everything (safe to re-run)
+  voicekit uninstall [--purge]      remove it (--purge also deletes config, state and model cache)
+  voicekit doctor                   check every part and say exactly what to fix
+  voicekit status                   short summary
+  voicekit paths                    where everything lives
+"""
+import json, os, platform, plistlib, shutil, subprocess, sys, time
+
+HOME = os.path.expanduser("~")
+KIT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(KIT, "claude"))
+import voicekit_common as vk  # noqa: E402
+
+KOKORO_DIR = os.path.join(KIT, "packages", "kokoro-voice")
+LISTEN_DIR = os.path.join(KIT, "packages", "listen-voice")
+LISTEN_CONFIG = os.path.join(HOME, ".config", "listen-voice", "config.json")
+LISTEN_DEFAULTS = {  # spellings for names speech-to-text often gets wrong in Claude work
+    "vocabulary": ["herdr", "Kokoro", "Claude", "Haiku", "Sonnet", "Opus", "MCP", "PR"],
+    "aliases": {"harder": "herdr", "hider": "herdr", "herder": "herdr", "cocoro": "Kokoro",
+                "kokora": "Kokoro", "cloud code": "Claude Code"},
+}
+BIN_DIR = os.path.join(HOME, ".local", "bin")
+LINKS = {"kokoro": os.path.join(KOKORO_DIR, "kokoro"),
+         "cvoice": os.path.join(KIT, "claude", "cvoice"),
+         "voicekit": os.path.join(KIT, "bin", "voicekit"),
+         "listen-voice": os.path.join(LISTEN_DIR, "listen"),   # not "listen": clashes with a Ruby gem
+         "voicectl": os.path.join(KIT, "claude", "voicectl"),
+         "claude-voice": os.path.join(KIT, "bin", "claude-voice")}
+LABEL = "com.claude-voice-kit.kokoro"
+OLD_LABELS = ["com.local.kokoro-voice"]
+PLIST = os.path.join(HOME, "Library", "LaunchAgents", f"{LABEL}.plist")
+SETTINGS = os.path.join(HOME, ".claude", "settings.json")
+HS_INIT = os.path.join(HOME, ".hammerspoon", "init.lua")
+HS_LINE = f'dofile("{KIT}/hammerspoon/voice-kit.lua")  -- claude-voice-kit'
+MODEL_ID = "mlx-community/Kokoro-82M-bf16"
+_H = os.path.join(KIT, "claude", "hooks")
+HOOKS = [  # (Claude Code event, hook script in this kit, timeout seconds)
+    ("SessionStart", os.path.join(_H, "session_event.py"), 10),
+    ("UserPromptSubmit", os.path.join(_H, "session_event.py"), 10),
+    ("Stop", os.path.join(_H, "session_event.py"), 10),
+    ("Stop", os.path.join(_H, "speak_summary.py"), 10),
+    ("StopFailure", os.path.join(_H, "session_event.py"), 10),
+    ("Notification", os.path.join(_H, "session_event.py"), 10),
+    ("Notification", os.path.join(_H, "speak_alert.py"), 10),
+    ("SessionEnd", os.path.join(_H, "session_event.py"), 10),
+    # waits up to control.approval_timeout_seconds for a spoken answer (hands-free mode only)
+    # its time limit is set from control.approval_timeout_seconds at install (see approval_hook_timeout)
+    ("PermissionRequest", os.path.join(_H, "voice_approval.py"), None),
+]
+# Hook scripts from earlier, pre-kit versions of this setup (removed from settings on install)
+LEGACY_HOOK_MARKERS = ["/.claude/hooks/speak-summary.py", "/.claude/hooks/speak-alert.py"]
+UID = os.getuid()
+
+
+def say(msg):
+    print(f"  {msg}")
+
+
+def step(msg):
+    print(f"\n▸ {msg}")
+
+
+def sh(*cmd, check=True, **kw):
+    return subprocess.run(cmd, check=check, **kw)
+
+
+# ---------------------------------------------------------------- settings.json hooks
+HOOK_MARKER = "VOICEKIT_HOOK=1"
+HOOK_SCRIPTS = ("session_event.py", "speak_summary.py", "speak_alert.py", "voice_approval.py")
+
+
+def hook_cmd(script):
+    """`|| true`: a missing or failing hook script must never block Claude Code. Python exits with
+    code 2 when the script file is missing, and Claude Code treats exit code 2 as "block"."""
+    return f'{HOOK_MARKER} python3 "{script}" || true'
+
+
+def is_ours(cmd):
+    """Our hooks, wherever the kit lives (the marker), plus older formats without it."""
+    if HOOK_MARKER in cmd or any(m in cmd for m in LEGACY_HOOK_MARKERS):
+        return True
+    return "/claude/hooks/" in cmd and any(cmd.rstrip('" ').endswith(n) or f'{n}"' in cmd for n in HOOK_SCRIPTS)
+
+
+def missing_hook_scripts(settings):
+    """Hook commands that run a script file which no longer exists (they'd fail on every event)."""
+    import shlex
+    bad = []
+    for ev, entries in settings.get("hooks", {}).items():
+        for e in entries:
+            for h in e.get("hooks", []):
+                cmd = h.get("command", "")
+                try:
+                    parts = shlex.split(cmd)
+                except ValueError:
+                    continue
+                for i, part in enumerate(parts[:-1]):
+                    if os.path.basename(part).startswith("python") and parts[i + 1].endswith(".py"):
+                        if not os.path.exists(os.path.expanduser(parts[i + 1])):
+                            bad.append((ev, parts[i + 1]))
+    return bad
+
+
+def load_settings():
+    try:
+        with open(SETTINGS) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
+def write_settings(d):
+    os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
+    if os.path.exists(SETTINGS):
+        if not os.path.exists(SETTINGS + ".before-voicekit"):    # your settings before the kit, kept once
+            shutil.copy2(SETTINGS, SETTINGS + ".before-voicekit")
+        shutil.copy2(SETTINGS, SETTINGS + ".bak-voicekit")     # the state before this change
+    tmp = SETTINGS + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f, indent=2)
+    os.replace(tmp, SETTINGS)
+
+
+def strip_our_hooks(d):
+    hooks = d.get("hooks", {})
+    for ev in list(hooks):
+        kept = []
+        for entry in hooks[ev]:
+            hs_ = [h for h in entry.get("hooks", []) if not is_ours(h.get("command", ""))]
+            if hs_:
+                kept.append(dict(entry, hooks=hs_))
+        if kept:
+            hooks[ev] = kept
+        else:
+            del hooks[ev]
+    return d
+
+
+def approval_hook_timeout():
+    """Hands-free plan approvals: summary (≤15 s) + spoken question (≤20 s) + your answer + margin."""
+    return int(vk.load_config()["control"]["approval_timeout_seconds"]) + 60
+
+
+def install_hooks():
+    d = strip_our_hooks(load_settings())
+    hooks = d.setdefault("hooks", {})
+    for ev, script, timeout in HOOKS:
+        timeout = timeout or approval_hook_timeout()
+        hooks.setdefault(ev, []).append(
+            {"matcher": "" if ev != "PermissionRequest" else "*",
+             "hooks": [{"type": "command", "command": hook_cmd(script), "timeout": timeout}]})
+    write_settings(d)
+    say(f"hooks registered in {SETTINGS} (backup: settings.json.bak-voicekit)")
+
+
+# ---------------------------------------------------------------- launchd
+def launchctl_bootout(label):
+    sh("launchctl", "bootout", f"gui/{UID}/{label}", check=False,
+       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def install_launchd():
+    for old in OLD_LABELS:
+        launchctl_bootout(old)
+        p = os.path.join(HOME, "Library", "LaunchAgents", f"{old}.plist")
+        if os.path.exists(p):
+            os.remove(p)
+            say(f"removed old LaunchAgent {old}")
+    tpl = open(os.path.join(KIT, "launchd", "kokoro.plist.template")).read()
+    xml = tpl.replace("{{LABEL}}", LABEL).replace("{{KIT}}", KIT).replace("{{HOME}}", HOME)
+    os.makedirs(os.path.dirname(PLIST), exist_ok=True)
+    os.makedirs(os.path.join(HOME, ".local", "state", "kokoro-voice"), exist_ok=True)
+    with open(PLIST, "w") as f:
+        f.write(xml)
+    launchctl_bootout(LABEL)
+    for _ in range(5):  # bootout is asynchronous
+        if sh("launchctl", "bootstrap", f"gui/{UID}", PLIST, check=False,
+              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+            break
+        time.sleep(1)
+    say(f"voice service LaunchAgent: {PLIST}")
+
+
+# ---------------------------------------------------------------- hammerspoon
+def install_hotkeys():
+    if not os.path.exists("/Applications/Hammerspoon.app"):
+        if shutil.which("brew"):
+            say("installing Hammerspoon (free, open source) for the hotkeys…")
+            sh("brew", "install", "--cask", "hammerspoon", check=False)
+        else:
+            say("Hammerspoon not found and Homebrew missing: hotkeys skipped (install Hammerspoon, re-run)")
+            return
+    os.makedirs(os.path.dirname(HS_INIT), exist_ok=True)
+    content = open(HS_INIT).read() if os.path.exists(HS_INIT) else ""
+    if "Kokoro voice hotkeys" in content and "claude-voice-kit" not in content:
+        shutil.copy2(HS_INIT, HS_INIT + ".bak-voicekit")      # pre-kit hotkeys: replace them
+        content = ""
+        say("replaced old voice hotkeys in init.lua (backup: init.lua.bak-voicekit)")
+    lines = [l for l in content.splitlines() if "claude-voice-kit" not in l]
+    lines.append(HS_LINE)
+    with open(HS_INIT, "w") as f:
+        f.write("\n".join(lines).strip() + "\n")
+    running = subprocess.run(["pgrep", "-x", "Hammerspoon"], capture_output=True).returncode == 0
+    if running and _hs_query_once("return 1") == "1":
+        _hs_query_once("hs.timer.doAfter(0.2, hs.reload) return 1")   # reload in place: no restart race
+        time.sleep(2)
+    else:
+        sh("killall", "Hammerspoon", check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1)
+        sh("open", "-g", "-a", "Hammerspoon", check=False)
+    for _ in range(30):  # wait until Hammerspoon has reloaded the config (IPC can be slow after a restart)
+        if hs_query("return voiceKit and #voiceKit.hotkeys or 0") not in ("", "0"):
+            break
+        time.sleep(1)
+    say("hotkeys loaded. First time only: allow Hammerspoon in System Settings → Privacy & Security → Accessibility")
+
+
+def remove_hotkeys():
+    if os.path.exists(HS_INIT):
+        lines = [l for l in open(HS_INIT).read().splitlines() if "claude-voice-kit" not in l]
+        with open(HS_INIT, "w") as f:
+            f.write("\n".join(lines).strip() + "\n")
+        sh("killall", "Hammerspoon", check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        sh("open", "-g", "-a", "Hammerspoon", check=False)
+
+
+# ---------------------------------------------------------------- migration from pre-kit setup
+def migrate_old_data():
+    vk.ensure_dirs()
+    old = os.path.join(HOME, ".claude", "voice")
+    moved = []
+    cfg_old = os.path.join(old, "config.json")
+    if os.path.exists(cfg_old) and not os.path.exists(vk.CONFIG_FILE):
+        try:
+            cfg = vk.load_config()
+            cfg["alerts"].update(json.load(open(cfg_old)).get("alerts", {}))
+            vk.save_config(cfg)
+            moved.append("alert settings")
+        except Exception:
+            pass
+    rep_old = os.path.join(old, "replies.json")
+    if os.path.exists(rep_old) and not os.path.exists(vk.REPLIES_FILE):
+        shutil.copy2(rep_old, vk.REPLIES_FILE)
+        moved.append("saved replies")
+    if os.path.exists(os.path.join(HOME, ".claude", "speak-off")):
+        vk.set_muted(True)
+        os.remove(os.path.join(HOME, ".claude", "speak-off"))
+        moved.append("mute setting")
+    if moved:
+        say("migrated from the old setup: " + ", ".join(moved))
+
+
+# ---------------------------------------------------------------- commands
+def install(args):
+    print(f"claude-voice-kit install  ({KIT})")
+    step("checking this Mac")
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        sys.exit("  claude-voice-kit needs an Apple Silicon Mac (macOS, arm64).")
+    if not shutil.which("uv"):
+        sys.exit("  `uv` is required: brew install uv   (then re-run)")
+    say("Apple Silicon macOS ✓  uv ✓")
+
+    step("installing the Kokoro voice (Python env + model, ~1.8 GB the first time)")
+    sh("uv", "sync", "--quiet", cwd=KOKORO_DIR)
+    sh(os.path.join(KOKORO_DIR, ".venv", "bin", "python"), "-c",
+       f"from huggingface_hub import snapshot_download; snapshot_download('{MODEL_ID}')",
+       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    say("voice model ready")
+
+    step("installing speech-to-text (Parakeet via transcribe.cpp)")
+    sh("uv", "sync", "--quiet", cwd=LISTEN_DIR)
+    r = subprocess.run([os.path.join(LISTEN_DIR, ".venv", "bin", "python"), "-c",
+                        "import sys; sys.path.insert(0, sys.argv[1]); import listend; "
+                        "print(listend.model_path(listend.config(), allow_download=True))", LISTEN_DIR],
+                       capture_output=True, text=True)
+    say(("model: " + r.stdout.strip()) if r.returncode == 0 else "model download failed: " + r.stderr[-200:])
+    os.makedirs(os.path.dirname(LISTEN_CONFIG), exist_ok=True)
+    try:
+        lcfg = json.load(open(LISTEN_CONFIG))
+    except FileNotFoundError:
+        lcfg = dict(LISTEN_DEFAULTS)
+    except Exception:
+        shutil.copy2(LISTEN_CONFIG, LISTEN_CONFIG + ".broken")
+        say(f"⚠️  {LISTEN_CONFIG} wasn't valid JSON: saved as .broken and replaced with defaults")
+        lcfg = dict(LISTEN_DEFAULTS)
+    wake = lcfg.setdefault("wake", {})        # hands-free: "hey claude …" goes to voicectl
+    wake["command"] = [os.path.join(KIT, "claude", "voicectl")]
+    wake["barge_in_command"] = [os.path.join(KOKORO_DIR, "kokoro"), "--stop"]
+    wake["busy_command"] = [os.path.join(KOKORO_DIR, "kokoro"), "--is-speaking"]   # echo guard
+    with open(LISTEN_CONFIG, "w") as f:
+        json.dump(lcfg, f, indent=2)
+    say(f"config: {LISTEN_CONFIG}")
+    kcfg_path = os.path.join(HOME, ".config", "kokoro-voice", "config.json")
+    try:
+        kcfg = json.load(open(kcfg_path))
+    except FileNotFoundError:
+        kcfg = {}
+    except Exception:
+        shutil.copy2(kcfg_path, kcfg_path + ".broken")
+        say(f"⚠️  {kcfg_path} wasn't valid JSON: saved as .broken and replaced with defaults")
+        kcfg = {}
+    # Held messages (other audio playing) are shown as a notification with buttons via Hammerspoon.
+    kcfg["notify_command"] = ["python3", os.path.join(KIT, "claude", "notify_held.py")]
+    pats = kcfg.setdefault("ignore_processes", [r"\bcoreaudiod\b"])
+    kcfg.setdefault("ignore_output_processes", [])   # apps that keep a silent output channel open (see README)
+    if r"listen-voice/recorder\.py" not in pats:
+        pats.append(r"listen-voice/recorder\.py")          # our own microphone doesn't count as other audio
+    os.makedirs(os.path.dirname(kcfg_path), exist_ok=True)
+    with open(kcfg_path, "w") as f:
+        json.dump(kcfg, f, indent=2)
+
+    step("linking commands into ~/.local/bin")
+    os.makedirs(BIN_DIR, exist_ok=True)
+    old = os.path.join(BIN_DIR, "listen")                    # earlier versions linked `listen`
+    if os.path.islink(old) and os.path.realpath(old) == os.path.realpath(os.path.join(LISTEN_DIR, "listen")):
+        os.remove(old)
+    for name, target in LINKS.items():
+        link = os.path.join(BIN_DIR, name)
+        if os.path.islink(link) or os.path.exists(link):
+            os.remove(link)
+        os.symlink(target, link)
+        os.chmod(target, 0o755)
+    say(" · ".join(LINKS))
+    if BIN_DIR not in os.environ.get("PATH", "").split(":"):
+        say(f"note: add {BIN_DIR} to your PATH")
+
+    step("settings")
+    migrate_old_data()
+    if not os.path.exists(vk.CONFIG_FILE):
+        vk.save_config(vk.load_config())
+    say(f"config: {vk.CONFIG_FILE}")
+
+    step("background voice service")
+    install_launchd()
+
+    step("Claude Code hooks")
+    install_hooks()
+
+    if "--no-hotkeys" not in args:
+        step("hotkeys (Hammerspoon)")
+        install_hotkeys()
+
+    step("checking")
+    ok = doctor([], quiet=True)
+    print("\n✅ Installed." if ok else "\n⚠️  Installed with issues. Run `voicekit doctor` for details.")
+    print("   Restart Claude Code sessions so they pick up the hooks. Try: kokoro \"Hello\"")
+
+
+def uninstall(args):
+    print("claude-voice-kit uninstall")
+    launchctl_bootout(LABEL)
+    if os.path.exists(PLIST):
+        os.remove(PLIST)
+    d = load_settings()
+    if d:
+        write_settings(strip_our_hooks(d))
+    for name, target in LINKS.items():
+        link = os.path.join(BIN_DIR, name)
+        if os.path.islink(link) and os.path.realpath(link) == os.path.realpath(target):
+            os.remove(link)
+    remove_hotkeys()
+    # hands-free off and the speech-to-text service stopped: the microphone must not stay open
+    vk.set_handsfree(False)
+    lv = os.path.join(LISTEN_DIR, "listen")
+    if os.path.exists(lv):
+        subprocess.run([sys.executable, lv, "--wake", "off"], capture_output=True, timeout=15)
+    subprocess.run(["pkill", "-f", os.path.join(LISTEN_DIR, "listend.py")], capture_output=True)
+    subprocess.run(["pkill", "-f", os.path.join(LISTEN_DIR, "recorder.py")], capture_output=True)
+    if "--purge" in args:
+        for p in (vk.CONFIG_DIR, vk.STATE_DIR, os.path.join(HOME, ".config", "kokoro-voice"),
+                  os.path.join(HOME, ".local", "state", "kokoro-voice"),
+                  os.path.join(HOME, ".config", "listen-voice"), os.path.join(HOME, ".local", "state", "listen-voice"),
+                  os.path.join(HOME, ".cache", "huggingface", "hub", "models--" + MODEL_ID.replace("/", "--"))):
+            shutil.rmtree(p, ignore_errors=True)
+    print(f"Removed. The project folder itself is untouched: {KIT}")
+
+
+def check(name, ok, fix=""):
+    print(f"  {'✅' if ok else '❌'} {name}" + ("" if ok or not fix else f"\n       fix: {fix}"))
+    return ok
+
+
+def hs_query(lua, retries=1):
+    for i in range(retries):
+        out = _hs_query_once(lua)
+        if out not in ("", "0", "false"):
+            return out
+        if i + 1 < retries:
+            time.sleep(1)
+    return out
+
+
+def _hs_query_once(lua):
+    try:
+        hs_bin = shutil.which("hs") or next((p for p in ("/opt/homebrew/bin/hs", "/usr/local/bin/hs")
+                                             if os.path.exists(p)), "/opt/homebrew/bin/hs")
+        r = subprocess.run([hs_bin, "-c", lua], capture_output=True, text=True, timeout=3)
+        if os.environ.get("VOICEKIT_DEBUG"):
+            print(f"    [hs] rc={r.returncode} out={r.stdout[-200:]!r} err={r.stderr[-200:]!r}")
+        lines = [l for l in r.stdout.splitlines() if l.strip() and not l.startswith("-- ")]
+        return lines[-1].strip() if lines else ""  # `hs` may print "-- Loading extension" lines first
+    except Exception:
+        return ""
+
+
+def doctor(args, quiet=False):
+    results = []
+    if not quiet:
+        print("claude-voice-kit doctor")
+    results.append(check("Apple Silicon macOS", platform.system() == "Darwin" and platform.machine() == "arm64"))
+    results.append(check("uv installed", bool(shutil.which("uv")), "brew install uv"))
+    results.append(check("voice environment", os.path.exists(os.path.join(KOKORO_DIR, ".venv", "bin", "python")),
+                         "voicekit install"))
+    results.append(check("speech-to-text environment", os.path.exists(os.path.join(LISTEN_DIR, ".venv", "bin", "python")),
+                         "voicekit install"))
+    lpy = os.path.join(LISTEN_DIR, ".venv", "bin", "python")
+    r = subprocess.run([lpy, "-c",
+                        "import sys; sys.path.insert(0, sys.argv[1]); import listend; print(listend.model_path(listend.config()))",
+                        LISTEN_DIR], capture_output=True, text=True, timeout=30) if os.path.exists(lpy) else None
+    results.append(check("speech-to-text model found locally", bool(r and r.returncode == 0), "voicekit install"))
+    for name, target in LINKS.items():
+        link = os.path.join(BIN_DIR, name)
+        results.append(check(f"command `{name}`", os.path.realpath(link) == os.path.realpath(target), "voicekit install"))
+    results.append(check("voice service LaunchAgent", os.path.exists(PLIST), "voicekit install"))
+    try:
+        st = json.loads(subprocess.run([LINKS["kokoro"], "--status"], capture_output=True, text=True, timeout=10).stdout)
+        running = st.get("ok", False)
+    except Exception:
+        running = False
+    check("voice service running (it quits when idle; that's OK)", running)
+    kpy = os.path.join(KOKORO_DIR, ".venv", "bin", "python")
+    try:
+        r = subprocess.run([kpy, os.path.join(KOKORO_DIR, "audio_activity.py")], capture_output=True, text=True,
+                           timeout=20) if os.path.exists(kpy) else None
+    except subprocess.TimeoutExpired:
+        r = None
+    results.append(check("other-audio detection (hold messages instead of talking over music/calls)",
+                         bool(r and r.returncode == 0 and "unsupported" not in r.stdout),
+                         "needs macOS 14.2+; messages will be spoken as usual"))
+    if os.path.exists("/Applications/Hammerspoon.app") and not quiet:
+        print("     tip: for Play/Approve/Deny buttons to stay on screen, set System Settings → Notifications →"
+              " Hammerspoon → Alerts")
+    d = load_settings()
+    cmds = [h.get("command", "") for es in d.get("hooks", {}).values() for e in es for h in e.get("hooks", [])]
+    present = {(ev, h.get("command", "")) for ev, es in d.get("hooks", {}).items() for e in es for h in e.get("hooks", [])}
+    for ev, script, _ in HOOKS:  # noqa: B007
+        results.append(check(f"Claude hook: {ev} → {os.path.basename(script)}", (ev, hook_cmd(script)) in present,
+                             "voicekit install"))
+    stale = missing_hook_scripts(d)
+    results.append(check("no hooks pointing at missing scripts" + (": " + ", ".join(f"{e} → {p}" for e, p in stale[:3])
+                                                                 if stale else ""), not stale,
+                         "voicekit install (replaces this kit's hooks); remove others from ~/.claude/settings.json"))
+    results.append(check("no leftover pre-kit hooks", not any(any(m in c for m in LEGACY_HOOK_MARKERS) for c in cmds),
+                         "voicekit install"))
+    results.append(check("claude command", os.path.exists(vk.claude_bin()), "install Claude Code"))
+    if os.path.exists("/Applications/Hammerspoon.app"):
+        loaded = HS_LINE in (open(HS_INIT).read() if os.path.exists(HS_INIT) else "")
+        results.append(check("hotkeys in ~/.hammerspoon/init.lua", loaded, "voicekit install"))
+        ax = hs_query("return tostring(hs.accessibilityState())", retries=15)
+        results.append(check("Hammerspoon Accessibility permission", ax == "true",
+                             "System Settings → Privacy & Security → Accessibility → enable Hammerspoon"))
+        n = hs_query("return voiceKit and #voiceKit.hotkeys or 0", retries=15)
+        results.append(check(f"hotkeys active ({n or 0})", n not in ("", "0"), "open Hammerspoon, then Reload Config"))
+    else:
+        check("Hammerspoon (optional, for hotkeys)", False, "voicekit install  (installs it with Homebrew)")
+    return all(results)
+
+
+def status(args):
+    subprocess.run([LINKS["cvoice"], "status"])
+
+
+def paths(args):
+    for k, v in [("project", KIT), ("config", vk.CONFIG_FILE), ("state", vk.STATE_DIR),
+                 ("kokoro config", os.path.join(HOME, ".config", "kokoro-voice", "config.json")),
+                 ("listen config", LISTEN_CONFIG),
+                 ("listen log", os.path.join(HOME, ".local", "state", "listen-voice", "listend.log")),
+                 ("voice service log", os.path.join(HOME, ".local", "state", "kokoro-voice", "voiced.log")),
+                 ("LaunchAgent", PLIST), ("Claude settings", SETTINGS), ("hotkeys", HS_INIT)]:
+        print(f"  {k:18} {v}")
+
+
+def main():
+    cmds = {"install": install, "uninstall": uninstall, "doctor": doctor, "status": status, "paths": paths}
+    if len(sys.argv) < 2 or sys.argv[1] not in cmds:
+        print(__doc__)
+        sys.exit(1)
+    r = cmds[sys.argv[1]](sys.argv[2:])
+    if sys.argv[1] == "doctor":
+        sys.exit(0 if r else 1)
+
+
+if __name__ == "__main__":
+    main()

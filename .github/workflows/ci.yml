@@ -1,0 +1,34 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: the workflow can only read the code.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    # Linux is enough for these checks (no audio/models); the real install is macOS-only and tested by hand.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with: { python-version: "3.12" }
+      - run: pip install numpy
+      - name: Compile every script
+        run: |
+          python -m py_compile bin/voicekit bin/claude-voice claude/voicectl claude/cvoice claude/*.py \
+            claude/hooks/*.py claude/channel/*.py packages/kokoro-voice/*.py packages/kokoro-voice/kokoro \
+            packages/listen-voice/*.py packages/listen-voice/listen
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Privacy check
+        run: sh scripts/privacy-check.sh

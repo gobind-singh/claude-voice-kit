@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # Keeps the pinned GitHub Actions up to date (security fixes arrive as pull requests).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+  # Python dependencies of the two packages (uv lock files).
+  - package-ecosystem: uv
+    directories: [/packages/kokoro-voice, /packages/listen-voice]
+    schedule: { interval: weekly }

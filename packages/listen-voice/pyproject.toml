@@ -1,0 +1,15 @@
+[project]
+name = "listen-voice"
+version = "0.1.0"
+description = "Local push-to-talk speech-to-text service and `listen` command for Apple Silicon Macs (Parakeet via transcribe.cpp)"
+requires-python = ">=3.12"
+dependencies = [
+    "transcribe-cpp>=0.4.2",   # transcribe.cpp bindings, prebuilt Metal wheel for macOS arm64
+    "numpy",
+    "soundfile",
+    "sounddevice",             # microphone recording (PortAudio)
+    "huggingface-hub",         # finds or downloads the shared Parakeet GGUF model
+]
+
+[tool.uv]
+package = false   # scripts, not an installable package (listend.py + listen)

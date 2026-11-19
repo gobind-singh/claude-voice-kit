@@ -1,0 +1,20 @@
+[project]
+name = "kokoro-voice"
+version = "0.1.0"
+description = "Local Kokoro text-to-speech service and `kokoro` command for Apple Silicon Macs"
+requires-python = ">=3.12"
+# misaki[en] also installs PyTorch (via spacy-curated-transformers). It is kept on purpose:
+# it enables misaki's optional transformer grammar mode (trf=True, needs en_core_web_trf),
+# which picks better pronunciations for homographs such as "read" and "lead". See README.
+dependencies = [
+    "en-core-web-sm",
+    "misaki[en]>=0.9.4",
+    "mlx-audio>=0.6.6",
+    "soundfile>=0.14.0",
+]
+
+[tool.uv]
+package = false   # scripts, not an installable package (voiced.py + kokoro)
+
+[tool.uv.sources]
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }

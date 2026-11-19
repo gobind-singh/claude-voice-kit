@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+"""claude-voice: start Claude Code with the voice channel, so voice commands can reach this session
+in ANY terminal (not only herdr). Same arguments as `claude`.
+
+Uses Claude Code Channels (research preview): custom channels need
+--dangerously-load-development-channels, and Claude Code shows a one-line confirmation screen at start
+("I am using this for local development"). Sessions in herdr don't need this.
+"""
+import json, os, sys, shutil
+
+KIT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+server = os.path.join(KIT, "claude", "channel", "voicekit_channel.py")
+cfg = json.dumps({"mcpServers": {"voicekit": {"command": "python3", "args": [server]}}})
+claude = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+os.execv(claude, [claude, "--mcp-config", cfg, "--dangerously-load-development-channels", "server:voicekit",
+                  *sys.argv[1:]])

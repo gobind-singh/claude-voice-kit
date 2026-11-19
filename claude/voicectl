@@ -1,0 +1,728 @@
+#!/usr/bin/env python3
+"""voicectl: control Claude Code sessions with spoken commands.
+
+  voicectl "<spoken text>"         understand and run a command (Right ⌘ push-to-talk calls this)
+  voicectl agents                  list sessions (name, state, terminal)
+  voicectl handsfree on|off|toggle voice approvals + "hey Claude" wake word
+  voicectl approve|always|deny [NAME]
+
+Examples of what you can say:
+  what's happening · who needs me · what's builder doing · what's it asking
+  approve · yes approve · always allow · deny · pick option 2
+  switch to builder · tell reviewer to check the diff · tell everyone to commit
+  stop builder · clear api · compact · use sonnet in api
+  start an agent in api to fix the tests · name this one reviewer
+  start the leader · tell the leader to split the work between two agents
+  stop · repeat · read it all · next · faster · slower · mute Claude · hands free on
+"""
+import difflib, glob, json, os, re, subprocess, sys, time
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import voicekit_common as vk  # noqa: E402
+import registry  # noqa: E402
+import adapters  # noqa: E402
+
+NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+           "nine": 9, "ten": 10, "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5}
+PRONOUNS = {"it", "this", "that", "this one", "that one", "him", "her", "them", "the agent", "the session"}
+ALL_WORDS = {"everyone", "everybody", "all", "all agents", "all sessions", "every agent", "everything"}
+MODELS = {"sonnet", "opus", "haiku", "fable"}
+CONFIRM_SECONDS = 25
+
+
+class Reply(Exception):
+    """Raised to finish a command with a spoken + printed message."""
+
+    def __init__(self, text, ok=True):
+        super().__init__(text)
+        self.text, self.ok = text, ok
+
+
+# ---------------------------------------------------------------- context ("it", confirmations)
+def ctx_load():
+    try:
+        return json.load(open(vk.CONTEXT_FILE))
+    except Exception:
+        return {}
+
+
+def ctx_save(c):
+    vk.ensure_dirs()
+    json.dump(c, open(vk.CONTEXT_FILE, "w"))
+
+
+def remember(s):
+    c = ctx_load()
+    c["last"] = s["session_id"]
+    ctx_save(c)
+
+
+def ask_confirm(action, prompt, **kw):
+    c = ctx_load()
+    c["confirm"] = {"action": action, "until": time.time() + CONFIRM_SECONDS, **kw}
+    ctx_save(c)
+    raise Reply(prompt + " Say yes or no.")
+
+
+# ---------------------------------------------------------------- sessions & targets
+def live_sessions():
+    herd = adapters.herdr_agents() if adapters.herdr_ok() else {}
+    known = {s["session_id"] for s in registry.sessions()}
+    for sid, h in herd.items():
+        # Sessions started before the hooks were installed: learn about them from herdr.
+        if sid not in known and h.get("cwd"):
+            registry.update(sid, cwd=h["cwd"], project=vk.project_name(h["cwd"]), source="herdr",
+                            terminal={"program": "herdr", "herdr_pane": h["pane_id"],
+                                      "app_bundle": adapters.herdr_app_bundle() or None})
+    for sid, h in herd.items():
+        # The herdr tab name ("docs") is the spoken name unless you named the agent.
+        cur = next((x for x in registry.sessions() if x["session_id"] == sid), None)
+        if cur is not None and (cur.get("label") or "") != (h.get("label") or ""):
+            registry.update(sid, label=h.get("label") or "")
+    for sid, h in herd.items():
+        # A herdr agent name ("tester") is the spoken name; it also survives /clear (new session id).
+        if h.get("name"):
+            cur = next((x for x in registry.sessions() if x["session_id"] == sid), None)
+            if cur and cur.get("alias") != h["name"]:
+                registry.set_alias(sid, h["name"])
+    sess = [s for s in registry.sessions()
+            if s.get("claude_pid") or s["session_id"] in herd]      # herdr-only entries vanish with herdr
+    for s in sess:
+        h = herd.get(s["session_id"])
+        if h:
+            s["herdr"] = h
+            s["state"] = {"blocked": "waiting", "working": "working", "done": "done",
+                          "idle": s.get("state") if s.get("state") in ("done", "failed") else "idle"
+                          }.get(h["status"], s.get("state"))
+    return sess
+
+
+def norm(t):
+    return re.sub(r"[^a-z0-9 ]", "", (t or "").lower().replace("-", " ").replace("_", " ")).strip()
+
+
+def resolve(name, sess, prefer=None):
+    """Find the session meant by a spoken name (or exact session id); None if unknown."""
+    for s in sess:
+        if name and name == s["session_id"]:
+            return s
+    n = norm(name)
+    n = re.sub(r"^(the|agent|session)\s+", "", n)
+    if not n or n in PRONOUNS:
+        last = ctx_load().get("last")
+        for s in sess:
+            if s["session_id"] == last:
+                return s
+        return default_target(sess, prefer)
+    m = re.match(r"^(?:agent|session|number)?\s*(\d+|\w+)$", n)
+    if m and (m.group(1).isdigit() or m.group(1) in NUMBERS) and not any(norm(s["name"]) == n for s in sess):
+        i = int(m.group(1)) if m.group(1).isdigit() else NUMBERS[m.group(1)]
+        if 1 <= i <= len(sess):
+            return sess[i - 1]
+    for s in sess:                                   # exact session id (used by notification buttons)
+        if name == s["session_id"]:
+            return s
+    names = {norm(s["name"]): s for s in sess}
+    for s in sess:
+        names.setdefault(norm(s.get("alias") or ""), s)
+        names.setdefault(norm((s.get("herdr") or {}).get("name") or ""), s)
+    names.pop("", None)
+    if n in names:
+        return names[n]
+    starts = [s for k, s in names.items() if k.startswith(n) or n.startswith(k)]
+    if len({x["session_id"] for x in starts}) == 1:
+        return starts[0]
+    close = difflib.get_close_matches(n, list(names), n=1, cutoff=0.6)
+    return names[close[0]] if close else None
+
+
+def default_target(sess, prefer=None):
+    if prefer:
+        cands = [s for s in sess if s.get("state") in prefer]
+        if len(cands) == 1:
+            return cands[0]
+    for s in sess:
+        if (s.get("herdr") or {}).get("focused"):
+            return s
+    return max(sess, key=lambda s: s.get("updated", 0)) if sess else None
+
+
+def target_or_reply(name, sess, prefer=None):
+    if not sess:
+        raise Reply("No Claude sessions are running.", ok=False)
+    s = resolve(name, sess, prefer)
+    if not s:
+        raise Reply(f"I don't know an agent called {name}. Agents are: " +
+                    ", ".join(x["name"] for x in sess) + ".", ok=False)
+    remember(s)
+    return s
+
+
+# ---------------------------------------------------------------- actions
+def describe(s):
+    st = s.get("state", "idle")
+    if st == "waiting":
+        return f"{s['name']} needs you" + (f": {s['pending']}" if s.get("pending") else "")
+    if st == "working":
+        lp = s.get("last_prompt") or ""
+        lp = "" if lp.lstrip().startswith("<") else re.sub(r"\s+", " ", lp)
+        return f"{s['name']} is working" + (f" on: {lp[:80]}" if lp else "")
+    if st == "failed":
+        return f"{s['name']} stopped with an error"
+    if st == "done":
+        return f"{s['name']} is done"
+    return f"{s['name']} is idle"
+
+
+def do_status(sess, who=None):
+    if who and norm(who) not in ALL_WORDS:
+        s = target_or_reply(who, sess)
+        raise Reply(describe(s) + ".")
+    if not sess:
+        raise Reply("No Claude sessions are running.")
+    order = {"waiting": 0, "failed": 1, "working": 2, "done": 3, "idle": 4}
+    parts = [describe(s) for s in sorted(sess, key=lambda s: order.get(s.get("state"), 5))]
+    n = len(sess)
+    raise Reply(f"{n} agent{'s' if n != 1 else ''}. " + ". ".join(parts) + ".")
+
+
+def do_who_needs_me(sess):
+    w = [s for s in sess if s.get("state") in ("waiting", "failed")]
+    if not w:
+        raise Reply("Nobody needs you right now.")
+    raise Reply(". ".join(describe(s) for s in w) + ".")
+
+
+def pending_approvals():
+    """Approval questions a hands-free hook is waiting on right now. Expired ones (the hook gave up or
+    was killed) are deleted, so a late "approve" can never answer a question that's gone."""
+    out = []
+    grace = vk.load_config()["control"]["approval_timeout_seconds"] + 5
+    for f in sorted(glob.glob(os.path.join(vk.PENDING_DIR, "*.json"))):
+        try:
+            p = json.load(open(f))
+            if time.time() > p.get("expires", p.get("created", 0) + grace):
+                for x in (f, f.replace(".json", ".decision")):
+                    if os.path.exists(x):
+                        os.remove(x)
+                continue
+            if not os.path.exists(f.replace(".json", ".decision")):
+                out.append(p)
+        except Exception:
+            pass
+    return out
+
+
+def answer_request(request_id, decision):
+    """Notification button: answer exactly one hands-free request, and only while it's still waiting."""
+    p = next((x for x in pending_approvals() if x["id"] == request_id), None)
+    if not p:
+        raise Reply("That request is no longer waiting.", ok=False)
+    with open(os.path.join(vk.PENDING_DIR, p["id"] + ".decision"), "w") as f:
+        f.write(decision)
+    vk.audit("button_" + decision, session=p["name"], request=p["desc"])
+    raise Reply({"allow": "Approved.", "deny": "Denied."}[decision])
+
+
+def answer_plan(session_id, approve, sess):
+    """Notification button for a plan shown on screen: acts only if that session is still showing a plan prompt."""
+    t = next((s for s in sess if s["session_id"] == session_id), None)
+    live = adapters.herdr_agents().get(session_id) if t else None
+    if not t or not live or live.get("status") != "blocked" or t.get("pending") != "approve the plan":
+        raise Reply("That plan is no longer waiting for approval.", ok=False)
+    adapters.send_keys(t, "1" if approve else "esc")
+    vk.audit("button_plan_" + ("approve" if approve else "keep_planning"), session=t["name"])
+    raise Reply("Plan approved." if approve else "Keep planning.")
+
+
+def do_approve(decision, who, sess, said_yes=False):
+    pend = pending_approvals()
+    if who:
+        t = target_or_reply(who, sess)
+        pend = [p for p in pend if p["session_id"] == t["session_id"]]
+    if len(pend) > 1:
+        raise Reply("More than one agent is asking: " + ", ".join(p["name"] for p in pend) +
+                    f". Say {decision} and the name.", ok=False)
+    if pend:
+        p = pend[0]
+        if decision != "deny" and p.get("risky") and not said_yes:
+            raise Reply(f"That's risky: {p['desc']}. Say yes approve, or deny.", ok=False)
+        with open(os.path.join(vk.PENDING_DIR, p["id"] + ".decision"), "w") as f:
+            f.write(decision)
+        vk.audit("voice_" + decision, session=p["name"], request=p["desc"])
+        raise Reply({"allow": "Approved.", "always": "Always allowed.", "deny": "Denied."}[decision])
+    # Not hands-free (no hook waiting): answer the on-screen prompt through herdr.
+    waiting = [s for s in sess if s.get("state") == "waiting"]
+    t = target_or_reply(who, sess) if who else (waiting[0] if len(waiting) == 1 else None)
+    if not t:
+        raise Reply("Nobody is waiting for an approval." if not waiting else
+                    "Several agents are waiting: " + ", ".join(s["name"] for s in waiting) + ". Say the name.",
+                    ok=False)
+    if not adapters.herdr_pane(t):
+        raise Reply(f"I can only answer {t['name']}'s prompt in hands-free mode or in herdr.", ok=False)
+    live = adapters.herdr_agents().get(t["session_id"]) or {}
+    if live.get("status") != "blocked":          # never press keys unless a prompt is on screen now
+        raise Reply(f"{t['name']} isn't asking for anything right now.", ok=False)
+    pend_text = t.get("pending") or ""
+    if decision != "deny" and not said_yes and vk.load_config()["control"]["confirm_risky"] and \
+            any(re.search(p, pend_text, re.I) for p in vk.load_config()["control"]["risky_patterns"]):
+        raise Reply(f"That's risky: {pend_text}. Say yes approve, or deny.", ok=False)
+    key = {"allow": "1", "always": "2", "deny": "esc"}[decision]
+    adapters.send_keys(t, key)
+    vk.audit("voice_" + decision, session=t["name"], request=pend_text, route="keys")
+    raise Reply({"allow": "Approved.", "always": "Always allowed.", "deny": "Denied."}[decision])
+
+
+def do_whats_asking(who, sess):
+    pend = pending_approvals()
+    if who:
+        t = target_or_reply(who, sess)
+        pend = [p for p in pend if p["session_id"] == t["session_id"]]
+        if not pend:
+            raise Reply(describe(t) + ".")
+    if pend:
+        raise Reply(". ".join(f"{p['name']} wants to {p['desc']}" for p in pend) + ".")
+    waiting = [s for s in sess if s.get("state") == "waiting"]
+    if waiting:
+        raise Reply(". ".join(describe(s) for s in waiting) + ".")
+    raise Reply("Nobody is asking for anything.")
+
+
+def do_tell(who, text, sess, confirmed=False):
+    text = text.strip().rstrip(".") + "."
+    text = text[0].upper() + text[1:]
+    if norm(who) in ALL_WORDS:
+        if not sess:
+            raise Reply("No Claude sessions are running.", ok=False)
+        if vk.load_config()["control"]["confirm_broadcast"] and not confirmed:
+            ask_confirm("tell_all", f"Send to all {len(sess)} agents: {text}", text=text)
+        routes = [adapters.send_prompt(s, text) for s in sess]
+        vk.audit("voice_tell_all", text=text, routes=routes)
+        sent = sum(1 for r in routes if r not in (None, "blocked"))
+        raise Reply(f"Sent to {sent} of {len(sess)} agents.")
+    t = target_or_reply(who, sess)
+    route = adapters.send_prompt(t, text)
+    vk.audit("voice_tell", session=t["name"], text=text, route=route)
+    if route == "blocked":
+        raise Reply(f"{t['name']} is waiting on a prompt first. Say what's it asking.", ok=False)
+    if not route:
+        raise Reply(f"I couldn't safely reach {t['name']}. Start it with claude-voice, or run it in herdr.", ok=False)
+    raise Reply(f"Sent to {t['name']}.")
+
+
+def do_switch(who, sess):
+    t = target_or_reply(who, sess)
+    adapters.focus(t)
+    vk.audit("voice_switch", session=t["name"])
+    raise Reply(f"{t['name']}.")
+
+
+def do_stop_agent(who, sess, confirmed=False):
+    if norm(who) in ALL_WORDS:
+        if not confirmed:
+            ask_confirm("stop_all", f"Stop all {len(sess)} agents?")
+        for s in sess:
+            adapters.send_keys(s, "esc")
+        vk.audit("voice_stop_all")
+        raise Reply("Stopped all agents.")
+    t = target_or_reply(who, sess)
+    if vk.load_config()["control"]["confirm_stop_agent"] and not confirmed:
+        ask_confirm("stop_agent", f"Stop {t['name']}?", session_id=t["session_id"])
+    adapters.send_keys(t, "esc")
+    vk.audit("voice_stop_agent", session=t["name"])
+    raise Reply(f"Stopped {t['name']}.")
+
+
+def do_slash(cmd, who, sess):
+    t = target_or_reply(who, sess)
+    route = adapters.send_prompt(t, cmd)
+    vk.audit("voice_slash", session=t["name"], command=cmd, route=route)
+    if route in (None, "blocked"):
+        raise Reply(f"I couldn't send {cmd} to {t['name']}.", ok=False)
+    raise Reply(f"{cmd.lstrip('/')} sent to {t['name']}.")
+
+
+def do_option(n, sess):
+    waiting = [s for s in sess if s.get("state") == "waiting"]
+    if len(waiting) != 1:
+        raise Reply("Nobody is asking." if not waiting else
+                    "Several agents are waiting: " + ", ".join(s["name"] for s in waiting) + ".", ok=False)
+    t = waiting[0]
+    live = adapters.herdr_agents().get(t["session_id"]) or {}
+    if live.get("status") != "blocked":           # only press keys while a prompt is really on screen
+        raise Reply(f"I can only pick an option for {t['name']} in herdr while it's asking.", ok=False)
+    cfg = vk.load_config()["control"]
+    if n in (1, 2) and cfg["confirm_risky"] and any(re.search(p, t.get("pending") or "", re.I)
+                                                     for p in cfg["risky_patterns"]):
+        raise Reply(f"That's risky: {t.get('pending')}. Say yes approve, or deny.", ok=False)
+    adapters.send_keys(t, str(n))
+    vk.audit("voice_option", session=t["name"], option=n)
+    raise Reply(f"Option {n} for {t['name']}.")
+
+
+def do_name(who, new, sess):
+    new = re.sub(r"[^a-z0-9_-]", "-", new.lower()).strip("-")[:32]
+    if not new or not new[0].isalpha():
+        raise Reply("Names must start with a letter.", ok=False)
+    t = target_or_reply(who, sess)
+    registry.set_alias(t["session_id"], new)
+    pane = adapters.herdr_pane(t)
+    if pane:
+        adapters.herdr("agent", "rename", pane, new)
+    vk.audit("voice_name", session=t["name"], new=new)
+    raise Reply(f"Named {new}.")
+
+
+# ---------------------------------------------------------------- start agents / leader
+def find_project_dir(project, sess):
+    p = norm(project)
+    for s in sess:
+        if norm(s.get("project")) == p and s.get("cwd"):
+            return s["cwd"]
+    home = os.path.expanduser("~")
+    for depth_root in [home, os.path.join(home, "tools"), os.path.join(home, "files"),
+                       os.path.join(home, "projects"), os.path.join(home, "code"), os.path.join(home, "src")]:
+        for root, dirs, _ in os.walk(depth_root):
+            if root.count(os.sep) - depth_root.count(os.sep) >= 3:
+                dirs[:] = []
+                continue
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("Library", "node_modules", "Applications")]
+            for d in dirs:
+                if norm(d) == p:
+                    return os.path.join(root, d)
+    return None
+
+
+def agent_name(base, sess):
+    base = re.sub(r"[^a-z0-9_-]", "-", (base or "agent").lower()).strip("-") or "agent"
+    if not base[0].isalpha():
+        base = "a-" + base
+    base = base[:28]
+    taken = {norm(s["name"]).replace(" ", "-") for s in sess} | \
+        {(s.get("herdr") or {}).get("name") for s in sess}
+    name, i = base, 2
+    while name in taken:
+        name, i = f"{base}-{i}", i + 1
+    return name
+
+
+def start_agent(path, name, task, extra_args=()):
+    if adapters.herdr_ok():
+        ok, data = adapters.herdr("pane", "split", "--direction", "right", "--cwd", path, "--no-focus")
+        if not ok:
+            raise Reply("herdr couldn't open a new pane.", ok=False)
+        pane = data["result"]["pane"]["pane_id"]
+        time.sleep(1.0)
+        ok, data = adapters.herdr("agent", "start", name, "--kind", "claude", "--pane", pane,
+                                  "--timeout", "60000", "--", *extra_args, timeout=70)
+        code = (data.get("error") or {}).get("code") if isinstance(data, dict) else None
+        if code == "agent_not_ready":
+            raise Reply(f"Started {name}, but it's waiting on a startup screen, probably folder trust. "
+                        "Please check it.")
+        if not ok:
+            adapters.herdr("pane", "close", pane)          # don't leave an empty pane behind
+            vk.audit("start_agent_failed", name=name, error=str(data)[:300])
+            raise Reply(f"Couldn't start {name}.", ok=False)
+        if task:
+            adapters.herdr("agent", "prompt", name, task)
+        return "herdr"
+    # No herdr: open a new Terminal window running Claude in that folder.
+    import shlex                                   # single-quote everything: no $(…) or `…` expansion
+    cmd = f"cd {shlex.quote(path)} && claude " + " ".join(shlex.quote(a) for a in extra_args) + \
+        (f" {shlex.quote(task)}" if task else "")
+    adapters.osascript(f'tell application "Terminal" to do script {json.dumps(cmd)}')
+    return "terminal"
+
+
+def do_start_agent(project, task, name, sess):
+    path = find_project_dir(project, sess) if project else os.path.expanduser("~")
+    if not path:
+        raise Reply(f"I can't find a folder called {project}.", ok=False)
+    nm = agent_name(name or project or "agent", sess)
+    task = (task.strip().rstrip(".") + ".") if task else None
+    route = start_agent(path, nm, task)
+    vk.audit("voice_start_agent", name=nm, path=path, task=task, route=route)
+    raise Reply(f"Started {nm}" + (" with your task." if task else "."))
+
+
+def do_start_leader(project, task, sess):
+    if any(norm(s["name"]) == "leader" for s in sess):
+        raise Reply("The leader is already running. Say tell the leader to, and your request.")
+    path = find_project_dir(project, sess) if project else os.path.expanduser("~")
+    prompt_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), "leader_prompt.md")
+    start_agent(path or os.path.expanduser("~"), "leader", task, ["--append-system-prompt-file", prompt_file])
+    vk.audit("voice_start_leader", path=path, task=task)
+    raise Reply("Leader started." + (" It has your task." if task else " Tell the leader what to do."))
+
+
+# ---------------------------------------------------------------- voice & modes
+def kokoro(*args):
+    subprocess.run([vk.KOKORO, *args], capture_output=True, timeout=15)
+
+
+def change_speed(delta):
+    try:
+        cfg = json.load(open(os.path.expanduser("~/.config/kokoro-voice/config.json")))
+    except Exception:
+        cfg = {}
+    sp = round(min(1.6, max(0.7, float(cfg.get("speed", 1.0)) + delta)), 2)
+    kokoro("--set-speed", str(sp))
+    raise Reply(f"Speed {sp}.")
+
+
+def set_handsfree(on):
+    vk.set_handsfree(on)
+    subprocess.run([vk.LISTEN, "--wake", "on" if on else "off"], capture_output=True, timeout=30)
+    vk.audit("handsfree", on=on)
+    raise Reply("Hands-free on. I'll ask approvals out loud. Say hey Claude to give a command."
+                if on else "Hands-free off.")
+
+
+# ---------------------------------------------------------------- AI router (unclear phrases)
+AI_PROMPT = """You turn a spoken command into JSON for a tool that controls Claude Code agents.
+Agents (name: state): {agents}
+Reply with ONLY one JSON object: {{"intent": I, "target": agent name or "all" or null, "text": string or null}}
+Intents: status, who_needs_me, whats_asking, approve, always, deny, tell (text = the instruction to send,
+cleaned up: correct punctuation, fix obvious speech-to-text mistakes), switch, stop_agent, clear, compact,
+model (text = sonnet|opus|haiku), start_agent (target = folder/project name, text = task), start_leader
+(text = task), name (text = new name), stop_speaking, repeat, read_all, unknown.
+Spoken command: {command}"""
+
+
+def ai_route(text, sess):
+    agents = ", ".join(f"{s['name']}: {s.get('state')}" for s in sess) or "none"
+    try:
+        r = subprocess.run([vk.claude_bin(), "-p", "--model", "haiku", "--settings", '{"disableAllHooks":true}',
+                            "--strict-mcp-config", "--tools", "", "--no-session-persistence"],
+                           input=AI_PROMPT.format(agents=agents, command=text), capture_output=True, text=True,
+                           timeout=40, cwd="/tmp", env={**os.environ, "VOICEKIT_CHILD": "1"})
+        m = re.search(r"\{.*\}", r.stdout, re.S)
+        return json.loads(m.group(0)) if m else None
+    except Exception:
+        return None
+
+
+def speech_action(flag):
+    kokoro(flag)
+    raise Reply("")
+
+
+def read_all():
+    subprocess.run([os.path.join(vk.KIT_DIR, "claude", "cvoice"), "full"])
+    raise Reply("")
+
+
+def run_intent(it, sess):
+    intent, tgt, txt = it.get("intent"), it.get("target"), it.get("text")
+    table = {
+        "status": lambda: do_status(sess, tgt),
+        "who_needs_me": lambda: do_who_needs_me(sess),
+        "whats_asking": lambda: do_whats_asking(tgt, sess),
+        "approve": lambda: do_approve("allow", tgt, sess),
+        "always": lambda: do_approve("always", tgt, sess),
+        "deny": lambda: do_approve("deny", tgt, sess),
+        "tell": lambda: do_tell(tgt or "it", txt or "", sess),
+        "switch": lambda: do_switch(tgt or "it", sess),
+        "stop_agent": lambda: do_stop_agent(tgt or "it", sess),
+        "clear": lambda: do_slash("/clear", tgt or "it", sess),
+        "compact": lambda: do_slash("/compact", tgt or "it", sess),
+        "model": lambda: do_slash(f"/model {txt}", tgt or "it", sess),
+        "start_agent": lambda: do_start_agent(tgt, txt, None, sess),
+        "start_leader": lambda: do_start_leader(None, txt, sess),
+        "name": lambda: do_name(tgt or "it", txt or "", sess),
+        "stop_speaking": lambda: speech_action("--stop"),
+        "repeat": lambda: speech_action("--replay"),
+        "read_all": lambda: read_all(),
+    }
+    if intent in table:
+        table[intent]()
+    raise Reply("Sorry, I didn't understand that.", ok=False)
+
+
+# ---------------------------------------------------------------- rules
+def route(raw):
+    text = raw.strip()
+    t = norm(text)
+    for w in vk.load_config()["control"]["wake_words"]:
+        if t.startswith(norm(w) + " "):
+            t = t[len(norm(w)):].strip()
+            text = re.sub(rf"^\W*{re.escape(w)}\W*", "", text, flags=re.I)
+            break
+    sess = live_sessions()
+    c = ctx_load()
+
+    # pending confirmation
+    conf = c.get("confirm")
+    if conf and conf.get("until", 0) > time.time():
+        if re.fullmatch(r"(yes|yeah|yep|yup|confirm|do it|go ahead|sure|ok|okay)( please)?", t):
+            c.pop("confirm")
+            ctx_save(c)
+            if conf["action"] == "tell_all":
+                do_tell("everyone", conf["text"], sess, confirmed=True)
+            if conf["action"] == "stop_all":
+                do_stop_agent("all", sess, confirmed=True)
+            if conf["action"] == "stop_agent":
+                s = next((x for x in sess if x["session_id"] == conf.get("session_id")), None)
+                if s:
+                    remember(s)
+                    do_stop_agent("it", sess, confirmed=True)
+            raise Reply("That agent is gone.", ok=False)
+        if re.fullmatch(r"(no|nope|cancel|never ?mind|dont|stop)", t):
+            c.pop("confirm")
+            ctx_save(c)
+            raise Reply("Cancelled.")
+
+    # approvals
+    m = re.fullmatch(r"(?P<yes>yes |yeah )?(approve|allow|accept|approved)( it| that| this)?( (for|in|to) (?P<t>.+)| (?P<t2>\w+))?", t)
+    if m:
+        do_approve("allow", m.group("t") or m.group("t2"), sess, said_yes=bool(m.group("yes")))
+    m = re.fullmatch(r"(yes )?always( allow| approve| yes)?( it| that)?( (for|in) (?P<t>.+))?", t)
+    if m:
+        do_approve("always", m.group("t"), sess, said_yes=bool(m.group(1)))
+    m = re.fullmatch(r"(deny|reject|refuse|block|dont allow|do not allow|no dont)( it| that| this)?( (for|in|to) (?P<t>.+)| (?P<t2>\w+))?", t)
+    if m:
+        do_approve("deny", m.group("t") or m.group("t2"), sess)
+    if t in ("yes", "yeah", "yep") and pending_approvals():
+        do_approve("allow", None, sess)
+    if t in ("no", "nope") and pending_approvals():
+        do_approve("deny", None, sess)
+    m = re.fullmatch(r"(pick|choose|select|press)?( option)? ?(?P<n>\d|one|two|three|four|five)", t)
+    if m and (m.group(1) or "option" in t):
+        n = m.group("n")
+        do_option(int(n) if n.isdigit() else NUMBERS[n], sess)
+
+    # status
+    if re.fullmatch(r"(whats|what is) (happening|going on|up)|status|overview|(list|show)( all)? (agents|sessions)|"
+                    r"how are (things|we doing)|(give me an )?update", t):
+        do_status(sess)
+    if re.fullmatch(r"who needs me|(does )?anyone need me|who is (waiting|blocked)|any(one|body) waiting", t):
+        do_who_needs_me(sess)
+    m = re.fullmatch(r"what (is|does|do|s) (?P<t>.+?) (asking( for)?|want|need|waiting for)", t) or \
+        re.fullmatch(r"whats (?P<t>.+?) (asking( for)?|want|need|waiting for)", t)
+    if m:
+        do_whats_asking(None if norm(m.group("t")) in PRONOUNS else m.group("t"), sess)
+    m = re.fullmatch(r"(whats|what is) (?P<t>.+?) doing|status (of|for) (?P<t2>.+)|how is (?P<t3>.+?) doing", t)
+    if m:
+        do_status(sess, m.group("t") or m.group("t2") or m.group("t3"))
+
+    # speech controls
+    if re.fullmatch(r"(stop|quiet|silence|shut up|stop talking|be quiet|enough)", t):
+        kokoro("--stop")
+        raise Reply("")
+    if re.fullmatch(r"(repeat|again|say (that|it) again|what did (you|it) say)", t):
+        kokoro("--replay")
+        raise Reply("")
+    if re.fullmatch(r"read (it|that|everything|the whole thing)( all)?|read all|full read|read the (full|whole) (reply|answer)", t):
+        subprocess.run([os.path.join(vk.KIT_DIR, "claude", "cvoice"), "full"])
+        raise Reply("")
+    if re.fullmatch(r"next( section)?|skip", t):
+        kokoro("--next")
+        raise Reply("")
+    if re.fullmatch(r"(speak |talk )?faster", t):
+        change_speed(+0.1)
+    if re.fullmatch(r"(speak |talk )?slower", t):
+        change_speed(-0.1)
+    if re.fullmatch(r"(mute|silence) (claude|voice|briefings)|voice off", t):
+        vk.set_muted(True)
+        kokoro("--stop")
+        raise Reply("Claude voice off.")
+    if re.fullmatch(r"unmute( claude| voice)?|voice on", t):
+        vk.set_muted(False)
+        raise Reply("Claude voice on.")
+    m = re.fullmatch(r"(hands ?free|wake word)( mode)? (?P<v>on|off)|(?P<v2>enable|disable|start|stop) hands ?free( mode)?", t)
+    if m:
+        set_handsfree((m.group("v") or m.group("v2")) in ("on", "enable", "start"))
+
+    # leader
+    m = re.fullmatch(r"(start|create|spawn|open) (the |a )?leader( in (?P<p>[\w .-]+?))?( (to|and) (?P<x>.+))?", t)
+    if m:
+        do_start_leader(m.group("p"), m.group("x") and text_after(text, m.group("x")), sess)
+
+    # start agent
+    m = re.fullmatch(r"(start|create|spawn|open|launch) (a |an |another )?(new )?(agent|session|claude)"
+                     r"( called (?P<n>[\w-]+))?( (in|for|on) (?P<p>[\w .-]+?))?( (to|and) (?P<x>.+))?", t)
+    if m:
+        do_start_agent(m.group("p"), m.group("x") and text_after(text, m.group("x")), m.group("n"), sess)
+
+    # model / slash commands
+    m = re.fullmatch(r"(use|switch to|change to) (?P<m>sonnet|opus|haiku|fable)( model)?( (for|in|on) (?P<t>.+))?", t)
+    if m:
+        do_slash(f"/model {m.group('m')}", m.group("t") or "it", sess)
+    m = re.fullmatch(r"(?P<c>clear|compact)( (the )?(context|conversation|session))?( (for|in|on) (?P<t>.+)| (?P<t2>.+))?", t)
+    if m:
+        do_slash("/" + m.group("c"), m.group("t") or m.group("t2") or "it", sess)
+
+    # switch
+    m = re.fullmatch(r"(switch|go|jump|move|change) (back )?to (?P<t>.+)|(focus( on)?|show( me)?|open) (?P<t2>.+)", t)
+    if m and (m.group("t") or m.group("t2")) not in MODELS:
+        do_switch(m.group("t") or m.group("t2"), sess)
+
+    # tell
+    m = re.fullmatch(r"(tell|ask|instruct|have) (?P<t>everyone|everybody|all agents|all|the leader|leader|"
+                     r"[\w -]+?) (to|that|about|if|whether) (?P<x>.+)", t)
+    if m:
+        who = "leader" if "leader" in m.group("t") else m.group("t")
+        do_tell(who, text_after(text, m.group("x")), sess)
+
+    # stop / name agents
+    m = re.fullmatch(r"(stop|interrupt|cancel|halt|escape|abort) (?P<t>.+)", t)
+    if m and m.group("t") not in ("talking", "speaking", "reading", "it talking"):
+        do_stop_agent(m.group("t"), sess)
+    m = re.fullmatch(r"(name|call|rename) (?P<t>this one|this|it|that one|[\w -]+?) (as |to )?(?P<n>[\w-]+)", t)
+    if m:
+        do_name(m.group("t"), m.group("n"), sess)
+
+    # unclear: ask Haiku
+    if vk.load_config()["control"]["ai_router"]:
+        it = ai_route(text, sess)
+        if it and it.get("intent") not in (None, "unknown"):
+            run_intent(it, sess)
+    raise Reply("Sorry, I didn't understand that. Say what's happening, approve, tell an agent, or switch to an agent.",
+                ok=False)
+
+
+def text_after(original, lowered_tail):
+    """Recover the original-case text for a matched (lower-cased) tail."""
+    words = lowered_tail.split()
+    if not words:
+        return lowered_tail
+    m = re.search(r"\b" + r"\W+".join(re.escape(w) for w in words[:3]), original, re.I)
+    return original[m.start():] if m else lowered_tail
+
+
+# ---------------------------------------------------------------- CLI
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__)
+        sys.exit(1)
+    try:
+        if args[0] == "agents":
+            for i, s in enumerate(live_sessions(), 1):
+                term = s.get("terminal") or {}
+                where = f"herdr {s['herdr']['pane_id']}" if s.get("herdr") else (term.get("program") or "?")
+                print(f"{i:2}. {s['name']:20} {s.get('state', '?'):8} {where:14} {s.get('cwd', '')}")
+            return
+        if args[0] == "handsfree":
+            v = args[1] if len(args) > 1 else "toggle"
+            set_handsfree((not vk.handsfree()) if v == "toggle" else v == "on")
+        if args[0] in ("approve-request", "deny-request") and len(args) > 1:     # notification buttons
+            answer_request(args[1], "allow" if args[0] == "approve-request" else "deny")
+        if args[0] in ("approve-plan", "keep-planning") and len(args) > 1:
+            answer_plan(args[1], args[0] == "approve-plan", live_sessions())
+        if args[0] in ("approve", "always", "deny"):
+            do_approve({"approve": "allow"}.get(args[0], args[0]), args[1] if len(args) > 1 else None,
+                       live_sessions(), said_yes=True)
+        heard = " ".join(args)
+        vk.audit("heard", text=heard)
+        route(heard)
+    except Reply as r:
+        if r.text:
+            if not os.environ.get("VOICEKIT_QUIET"):     # VOICEKIT_QUIET=1: print only (tests, scripts)
+                vk.speak(r.text, urgent=True)
+            print(r.text)
+        sys.exit(0 if r.ok else 2)
+
+
+if __name__ == "__main__":
+    main()

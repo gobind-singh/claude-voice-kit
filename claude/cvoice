@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""cvoice: control Claude's voice (briefings, alerts, full reads).
+
+  cvoice [status]                  on/off, speaking, queue
+  cvoice on | off | toggle         Claude voice on/off   (hotkey Control+Option+V)
+  cvoice full [N] [--toggle]       read the whole last reply (N=2: the one before)  (Control+Option+F)
+  cvoice next                      skip to the next section                      (Control+Option+N)
+  cvoice replay [N]                repeat a spoken message                       (Control+Option+R)
+  cvoice stop                      stop speaking                                 (Control+Option+S)
+  cvoice alerts [NAME on|off]      permission | question | idle
+"""
+import json, os, subprocess, sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import voicekit_common as vk  # noqa: E402
+
+
+def kokoro_out(*args):
+    try:
+        return subprocess.run([vk.KOKORO, *args], capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return ""
+
+
+def status():
+    print("Claude voice:", "off" if vk.is_muted() else "on")
+    try:
+        st = json.loads(kokoro_out("--status"))
+    except Exception:
+        st = {}
+    if st.get("running") is False or not st:
+        print("voice service: not running (starts on next use)")
+    else:
+        print(f"voice service: running · speaking={st.get('speaking')} · queued={st.get('queued')}"
+              f" · model_loaded={st.get('model_loaded')}")
+
+
+def full(args):
+    toggle = "--toggle" in args
+    nums = [a for a in args if a.isdigit()]
+    n = int(nums[0]) if nums else 1
+    if toggle:
+        try:
+            st = json.loads(kokoro_out("--status"))
+            if st.get("tag") == "claude-full" and st.get("speaking"):
+                vk.kokoro("--stop")
+                return
+        except Exception:
+            pass
+    try:
+        with open(vk.REPLIES_FILE) as f:
+            items = json.load(f)
+    except Exception:
+        items = []
+    if len(items) < n:
+        vk.kokoro("-i", "--", "There is no saved Claude reply to read yet.")
+        return
+    r = items[-n]
+    intro = f"Full reply, in {r['project']}." if r.get("project") else "Full reply."
+    vk.kokoro("-i", "--tag", "claude-full", text=intro + "\n\n" + r["text"], timeout=60)
+
+
+def alerts(args):
+    cfg = vk.load_config()
+    a = cfg["alerts"]
+    if args:
+        if len(args) != 2 or args[0] not in a or args[1] not in ("on", "off"):
+            sys.exit("usage: cvoice alerts <permission|question|idle> on|off")
+        a[args[0]] = args[1] == "on"
+        vk.save_config(cfg)
+    for k, v in a.items():
+        print(f"{k:11} {'on' if v else 'off'}")
+
+
+def main():
+    args = sys.argv[1:]
+    cmd = args[0] if args else "status"
+    rest = args[1:]
+    if cmd == "status":
+        status()
+    elif cmd in ("on", "off", "toggle"):
+        turning_on = vk.is_muted() if cmd == "toggle" else cmd == "on"
+        vk.set_muted(not turning_on)
+        if not turning_on:
+            vk.kokoro("--stop")
+        print("Claude voice:", "on" if turning_on else "off")
+    elif cmd == "full":
+        full(rest)
+    elif cmd == "next":
+        vk.kokoro("--next")
+    elif cmd == "replay":
+        vk.kokoro("--replay", rest[0] if rest else "1")
+    elif cmd == "stop":
+        vk.kokoro("--stop")
+    elif cmd == "alerts":
+        alerts(rest)
+    else:
+        print(__doc__)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
