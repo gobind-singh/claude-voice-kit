@@ -8,7 +8,7 @@ Spoken briefings · voice commands · hands-free approvals · local speech on yo
 
 [![CI](https://github.com/gobind-singh/claude-voice-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/gobind-singh/claude-voice-kit/actions/workflows/ci.yml)
 ![Platform](https://img.shields.io/badge/platform-macOS%20·%20Apple%20Silicon-black)
-[![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 </div>
 
@@ -136,6 +136,6 @@ Issues and pull requests are welcome. See [CONTRIBUTING](.github/CONTRIBUTING.md
 `python3 -m unittest discover -s tests`.
 
 ## License
-The code is released into the **public domain** under [The Unlicense](LICENSE): use it for anything, no attribution
-needed. Models and libraries are downloaded at install time under their own licences; see
+The code is released under the [MIT License](LICENSE): use, change and share it freely, including commercially, as long
+as the licence notice stays with it. Models and libraries are downloaded at install time under their own licences; see
 [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md).

@@ -1,6 +1,6 @@
 # Third-party software and models
 
-claude-voice-kit's own code is in the public domain ([The Unlicense](../LICENSE)). It **does not bundle** any
+claude-voice-kit's own code is under the [MIT License](../LICENSE). It **does not bundle** any
 third-party code or model weights. The installer downloads them onto your Mac from their official sources (PyPI,
 Hugging Face, Homebrew), and each keeps its own licence. Using them is subject to those licences.
 

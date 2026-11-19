@@ -27,7 +27,7 @@ sh scripts/privacy-check.sh                   # no personal paths, e-mails or se
 ## Pull requests
 - Keep each PR to one change, with a clear title and a short description of *why*.
 - CI (compile, unit tests, privacy check) must pass.
-- By contributing, you agree to release your contribution into the public domain under [The Unlicense](../LICENSE).
+- By contributing, you agree to license your contribution under the [MIT License](../LICENSE).
 
 ## How changes reach `main`
 - `main` is protected: no direct pushes, force-pushes or deletion. Every change goes through a pull request.
