@@ -37,7 +37,7 @@ One-time steps after `✅ Installed.`:
 ## Hotkeys
 | Key | Does |
 |---|---|
-| **Right ⌘ (hold)** | speak a voice command, release to run it. A strip at the bottom of the screen shows "Heard: … → result" |
+| **Right ⌘ (hold)** | after a soft tick (0.3 s), speak a voice command; release to run it. A strip at the bottom of the screen shows "Heard: … → result" |
 | ⌃⌥H | hands-free mode on/off |
 | ⌃⌥V | Claude's voice on/off (mute) |
 | ⌃⌥F | read the whole last reply or plan (press again to stop) |
@@ -48,7 +48,14 @@ One-time steps after `✅ Installed.`:
 | ⌃⌥K | read the selected text in any app |
 | fn | stop speaking (fn is the usual dictation key, so you're never talked over) |
 
-Using Right ⌘ as part of a normal shortcut (e.g. Right ⌘ + C) cancels the recording, so your shortcuts keep working.
+Listening starts only after Right ⌘ has been held **on its own** for 0.3 s, so shortcuts such as Right ⌘ + Delete or
+Right ⌘ + C never stop speech, open the microphone or flash the strip. Wait for the tick, then speak. To change the key,
+the delay or the tick, set `push_to_talk` in `~/.config/claude-voice-kit/config.json`, then reload Hammerspoon:
+
+```json
+"push_to_talk": {"key": "right_cmd", "hold_ms": 300, "cue_sound": "Tink"}
+```
+`key` can be `right_cmd`, `right_option`, `right_shift` or `right_ctrl`. `cue_sound` is any macOS sound name, or `""` for none.
 
 ## Voice commands
 Hold **Right ⌘**, or say **"hey Claude, …"** in hands-free mode.
@@ -129,7 +136,7 @@ Code asks you to confirm "local development" at each launch.
 ## Settings
 | File | What you can change |
 |---|---|
-| `~/.config/claude-voice-kit/config.json` | which alerts are spoken, summary model, approval timeout, risky patterns, confirmations, per-agent voices (`agent_voices`), AI router, wake words |
+| `~/.config/claude-voice-kit/config.json` | push-to-talk key and delay, which alerts are spoken, summary model, approval timeout, risky patterns, confirmations, per-agent voices (`agent_voices`), AI router, wake words |
 | `~/.config/kokoro-voice/config.json` | voice, speed, idle timers, behaviour when other audio is playing, ignored apps |
 | `~/.config/listen-voice/config.json` | speech model, microphone, vocabulary and corrections ("harder" → "herdr"), wake phrases |
 
