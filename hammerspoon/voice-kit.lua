@@ -11,7 +11,7 @@
 --   Control+Option+K (⌃⌥K)  read the selected text in any app aloud
 --   Control+Option+H (⌃⌥H)  hands-free mode on/off (voice approvals + "hey Claude" wake phrase)
 --   Control+Option+P (⌃⌥P)  play messages held back while other audio was playing
---   Right Command (hold)    speak a voice command; release to run it (strip shows "Heard: … → result")
+--   Right Command (hold)    after 0.3 s alone: speak a voice command; release to run it (strip shows "Heard: … → result")
 --   fn                      stops speech (the usual dictation key, so dictating interrupts it)
 
 require("hs.ipc")  -- lets the `hs` command talk to Hammerspoon (used by `voicekit doctor`)
@@ -74,13 +74,31 @@ bind("K", function()
 end)
 
 -- Hold Right Command (⌘) to speak a voice command; release to transcribe it.
--- If another key is pressed while holding (e.g. Right ⌘ + C as a normal shortcut), the
--- recording is cancelled, so Right ⌘ keeps working for ordinary shortcuts.
--- (Right Option was used before, but it's needed with Backspace.)
+-- Listening starts only after the key has been held ALONE for hold_ms (default 0.3 s), with a soft
+-- tick. Shortcuts like Right ⌘ + Delete or Right ⌘ + C are typed within that time, so they never
+-- stop speech, open the microphone or show the strip. Pressing another key while recording cancels it.
+-- Settings: "push_to_talk" in ~/.config/claude-voice-kit/config.json
+--   {"key": "right_cmd" | "right_option" | "right_shift" | "right_ctrl", "hold_ms": 300, "cue_sound": "Tink" | ""}
 VK.listen = VK.dir .. "/packages/listen-voice/listen"
 VK.voicectl = VK.dir .. "/claude/voicectl"
-local PTT_KEY = 54          -- Right Command (Right Option = 61, Left Command = 55)
+local PTT_KEYS = {             -- keycode and the modifier flag it sets
+  right_cmd = { 54, "cmd" }, right_option = { 61, "alt" }, right_shift = { 60, "shift" }, right_ctrl = { 62, "ctrl" },
+}
+local function pttSettings()
+  local s = { key = "right_cmd", hold_ms = 300, cue_sound = "Tink" }
+  local ok, cfg = pcall(hs.json.read, os.getenv("HOME") .. "/.config/claude-voice-kit/config.json")
+  if ok and type(cfg) == "table" and type(cfg.push_to_talk) == "table" then
+    for k, v in pairs(cfg.push_to_talk) do s[k] = v end
+  end
+  if not PTT_KEYS[s.key] then s.key = "right_cmd" end
+  s.hold_ms = math.max(0, tonumber(s.hold_ms) or 300)
+  return s
+end
+VK.ptt = pttSettings()
+local PTT_KEY, PTT_FLAG = PTT_KEYS[VK.ptt.key][1], PTT_KEYS[VK.ptt.key][2]
+local OTHER_FLAGS = { "cmd", "alt", "ctrl", "shift", "fn" }
 VK.recording = false
+VK.armTimer = nil              -- running while the key is held but listening hasn't started yet
 local function stripMessage(msg, secs)
   hs.alert.closeAll(0)
   hs.alert.show(msg, { atScreenEdge = 2, textSize = 18 }, secs or 30)
@@ -105,24 +123,49 @@ end)
 if hs.fs.attributes(os.getenv("HOME") .. "/.local/state/claude-voice-kit/handsfree") then
   run(VK.listen, { "--wake", "on" })
 end
+local function disarm()
+  if VK.armTimer then VK.armTimer:stop(); VK.armTimer = nil end
+end
+local function startListening()
+  VK.armTimer = nil
+  VK.recording = true
+  kokoro({ "--stop" })                                   -- don't record our own voice
+  run(VK.listen, { "--start" })
+  if VK.ptt.cue_sound and VK.ptt.cue_sound ~= "" then
+    local cue = hs.sound.getByName(VK.ptt.cue_sound)
+    if cue then cue:volume(0.4):play() end
+  end
+  stripMessage("🎙️ Listening…  (release the key when done)")
+end
+local function onlyPttHeld(f)
+  if not f[PTT_FLAG] then return false end
+  for _, m in ipairs(OTHER_FLAGS) do
+    if m ~= PTT_FLAG and f[m] then return false end
+  end
+  return true
+end
 VK.pttWatcher = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged, hs.eventtap.event.types.keyDown }, function(e)
   local t = e:getType()
   if t == hs.eventtap.event.types.keyDown then
-    if VK.recording then                                 -- Right ⌘ used as a modifier: cancel
+    disarm()                                             -- a shortcut (e.g. Right ⌘ + Delete): do nothing
+    if VK.recording then                                 -- key used as a modifier while recording: cancel
       VK.recording = false
       run(VK.listen, { "--cancel" })
       hs.alert.closeAll(0)
     end
     return false
   end
-  if e:getKeyCode() ~= PTT_KEY then return false end
   local f = e:getFlags()
-  if f.cmd and not (f.alt or f.ctrl or f.shift or f.fn) and not VK.recording then
-    VK.recording = true
-    kokoro({ "--stop" })                                 -- don't record our own voice
-    run(VK.listen, { "--start" })
-    stripMessage("🎙️ Listening…  (release Right ⌘ when done)")
-  elseif not f.cmd and VK.recording then
+  if e:getKeyCode() ~= PTT_KEY then
+    if VK.armTimer and not onlyPttHeld(f) then disarm() end   -- another modifier joined in
+    return false
+  end
+  if onlyPttHeld(f) and not VK.recording and not VK.armTimer then
+    if VK.ptt.hold_ms == 0 then startListening()
+    else VK.armTimer = hs.timer.doAfter(VK.ptt.hold_ms / 1000, startListening) end
+  elseif not f[PTT_FLAG] and VK.armTimer then           -- quick tap: released before listening started
+    disarm()
+  elseif not f[PTT_FLAG] and VK.recording then
     VK.recording = false
     stripMessage("… transcribing", 5)
     run(VK.listen, { "--stop" }, function(code, out)
