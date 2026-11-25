@@ -228,7 +228,7 @@ VK.pttWatcher:start()
 -- Held messages are quiet: no system notification. The menu bar icon shows the count and lists
 -- each message with Play / Approve / Deny / Dismiss, and the HUD briefly says one was held.
 -- ("ui": {"held": "notification"} brings back a macOS notification with buttons.)
-VK.kokoro = kokoro
+VK.kokoroDo = kokoro   -- run `kokoro` with arguments (VK.kokoro is its path)
 function VK.runHeldAction(item, a)
   local args = {}
   for i = 2, #a.command do table.insert(args, a.command[i]) end

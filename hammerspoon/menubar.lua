@@ -40,12 +40,12 @@ return function(VK, Icons)
     local out = {}
     for i = #items, 1, -1 do
       local h = items[i]
-      local sub = { { title = "Play", image = Icons.image("play", 16), fn = function() VK.kokoro({ "--play-held", h.id }) end } }
+      local sub = { { title = "Play", image = Icons.image("play", 16), fn = function() VK.kokoroDo({ "--play-held", h.id }) end } }
       for _, a in ipairs(h.actions or {}) do
         table.insert(sub, { title = a.label, fn = function() VK.runHeldAction(h, a) end })
       end
       table.insert(sub, { title = "-" })
-      table.insert(sub, { title = "Dismiss", fn = function() VK.kokoro({ "--drop-held", h.id }) end })
+      table.insert(sub, { title = "Dismiss", fn = function() VK.kokoroDo({ "--drop-held", h.id }) end })
       if h.why and #h.why > 0 then table.insert(sub, { title = "Held because " .. h.why, disabled = true }) end
       local actionable = h.actions and #h.actions > 0
       table.insert(out, { title = short(h.text, 60), image = Icons.image(actionable and "warning" or "message", 16),
@@ -86,7 +86,7 @@ return function(VK, Icons)
       table.insert(m, { title = "Held while other audio played", disabled = true })
       for _, e in ipairs(heldEntries(s.items)) do table.insert(m, e) end
       table.insert(m, { title = "Play all held (" .. s.held .. ")", image = img("play"), fn = VK.playHeld })
-      table.insert(m, { title = "Dismiss all", fn = function() VK.kokoro({ "--drop-held", "all" }) end })
+      table.insert(m, { title = "Dismiss all", fn = function() VK.kokoroDo({ "--drop-held", "all" }) end })
     else
       table.insert(m, { title = "No held messages", disabled = true, image = img("message") })
     end
