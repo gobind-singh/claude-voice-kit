@@ -23,7 +23,15 @@ local MIC = {
 }
 local SPEAKER = { poly({ 3, 9.5 }, { 7, 9.5 }, { 12, 5 }, { 12, 19 }, { 7, 14.5 }, { 3, 14.5 }) }
 
+-- Sound bars: the menu bar icon ("voice"), five rounded bars like a level meter.
+local BARS = {
+  line({ 4, 10.5 }, { 4, 13.5 }), line({ 8, 7 }, { 8, 17 }), line({ 12, 4 }, { 12, 20 }),
+  line({ 16, 8 }, { 16, 16 }), line({ 20, 10.5 }, { 20, 13.5 }),
+}
+
 local SHAPES = {
+  bars = BARS,
+  barsOff = { BARS[1], BARS[2], BARS[3], BARS[4], BARS[5], line({ 3, 3 }, { 21, 21 }) },
   mic = MIC,
   micOff = { MIC[1], MIC[2], MIC[3], MIC[4], line({ 3, 3 }, { 21, 21 }) },
   speaker = { SPEAKER[1], arc(12, 12, 4, 45, 135), arc(12, 12, 7.5, 40, 140) },

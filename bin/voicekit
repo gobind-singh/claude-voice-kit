@@ -339,7 +339,7 @@ def install(args):
         shutil.copy2(kcfg_path, kcfg_path + ".broken")
         say(f"⚠️  {kcfg_path} wasn't valid JSON: saved as .broken and replaced with defaults")
         kcfg = {}
-    # Held messages (other audio playing) are shown as a notification with buttons via Hammerspoon.
+    # Held messages (other audio playing) go to Hammerspoon: menu bar count + list (or a notification, if chosen).
     kcfg["notify_command"] = ["python3", os.path.join(KIT, "claude", "notify_held.py")]
     pats = kcfg.setdefault("ignore_processes", [r"\bcoreaudiod\b"])
     # apps that keep a silent output channel open (see README); macOS's system-sound helper always does
@@ -489,9 +489,6 @@ def doctor(args, quiet=False):
     results.append(check("volume check (a silent browser tab or app doesn't hold messages)", perm == "granted",
                          {"missing": "helper not built: run `voicekit install` (needs Xcode command-line tools)"}
                          .get(perm, "allow System Audio Recording for audio-level: run `voicekit install`")))
-    if os.path.exists("/Applications/Hammerspoon.app") and not quiet:
-        print("     tip: for Play/Approve/Deny buttons to stay on screen, set System Settings → Notifications →"
-              " Hammerspoon → Alerts")
     d = load_settings()
     cmds = [h.get("command", "") for es in d.get("hooks", {}).values() for e in es for h in e.get("hooks", [])]
     present = {(ev, h.get("command", "")) for ev, es in d.get("hooks", {}).items() for e in es for h in e.get("hooks", [])}

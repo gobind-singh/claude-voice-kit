@@ -9,7 +9,9 @@
   (`push_to_talk`).
 - New on-screen HUD replaces Hammerspoon's plain alert box: our own line icons, a colour for each state
   (listening, transcribing, done, problem), animated listening bars and spinner, fades in and out.
-- New menu bar icon: voice on/off, hands-free, held-message count, and a menu with the hotkey actions.
+- New menu bar icon (sound bars): voice on/off, hands-free, held-message count, and a menu with the hotkey actions.
+- Held messages are quiet: no macOS notification. The menu bar icon lists each one with Play / Approve / Deny /
+  Dismiss (`"ui": {"held": "notification"}` brings the notification back).
 - No emoji in on-screen messages. `"ui": {"hud": false, "menubar": false}` in config.json turns either off.
 - Licence changed to MIT.
 

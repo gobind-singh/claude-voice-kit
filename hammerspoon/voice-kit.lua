@@ -225,34 +225,33 @@ VK.pttWatcher:start()
 -- recording audio. kokoro calls claude/notify_held.py, which calls this.
 -- Buttons: Play (speak it now), extra actions such as Approve / Deny, and Dismiss (closes the
 -- notification; the message stays on ⌃⌥P until it expires).
-function VK.notifyHeld(b64)
-  local item = hs.json.decode(hs.base64.decode(b64))
-  if not item then return end
+-- Held messages are quiet: no system notification. The menu bar icon shows the count and lists
+-- each message with Play / Approve / Deny / Dismiss, and the HUD briefly says one was held.
+-- ("ui": {"held": "notification"} brings back a macOS notification with buttons.)
+VK.kokoro = kokoro
+function VK.runHeldAction(item, a)
+  local args = {}
+  for i = 2, #a.command do table.insert(args, a.command[i]) end
+  run(a.command[1], args, function() refreshMenu() end)
+  kokoro({ "--drop-held", item.id })
+end
+local function notifyHeldSystem(item)
   local labels = {}
   for _, a in ipairs(item.actions or {}) do table.insert(labels, a.label) end
   local n = hs.notify.new(function(note)
-    local t = note:activationType()
-    local types = hs.notify.activationTypes
+    local t, types = note:activationType(), hs.notify.activationTypes
     if t == types.additionalActionClicked then
       local chosen = note:additionalActivationAction()
       for _, a in ipairs(item.actions or {}) do
-        if a.label == chosen then
-          local args = {}
-          for i = 2, #a.command do table.insert(args, a.command[i]) end
-          run(a.command[1], args)
-          kokoro({ "--drop-held", item.id })
-        end
+        if a.label == chosen then VK.runHeldAction(item, a) end
       end
     elseif t == types.actionButtonClicked or t == types.contentsClicked then
       kokoro({ "--play-held", item.id })
     end
   end, {
-    title = "Claude · held (" .. (item.why or "other audio") .. ")",
-    informativeText = item.text,
-    hasActionButton = true,
-    actionButtonTitle = "Play",
-    otherButtonTitle = "Dismiss",
-    withdrawAfter = 0,
+    title = "Claude \u{00B7} held (" .. (item.why or "other audio") .. ")",
+    informativeText = item.text, hasActionButton = true, actionButtonTitle = "Play",
+    otherButtonTitle = "Dismiss", withdrawAfter = 0,
   })
   if #labels > 0 then
     n:additionalActions(labels)
@@ -260,8 +259,16 @@ function VK.notifyHeld(b64)
   end
   n:send()
   VK.lastHeldNote = n
+end
+function VK.notifyHeld(b64)
+  local item = hs.json.decode(hs.base64.decode(b64))
+  if not item then return end
+  if ui.held == "notification" then notifyHeldSystem(item) end
+  local count = VK.menu and VK.menu.state().held or 1
+  local title = count > 1 and (count .. " messages held") or "Message held"
+  local hint = (item.actions and #item.actions > 0) and "Answer from the menu bar icon" or "\u{2303}\u{2325}P to play"
   local why = (item.why and #item.why > 0) and item.why or "Other audio was playing"
-  HUD.show("info", "Message held", why .. " \u{00B7} \u{2303}\u{2325}P to play", 4, { icon = "message" })
+  HUD.show("info", title, why .. " \u{00B7} " .. hint, 3, { icon = "message" })
   refreshMenu()
 end
 

@@ -30,7 +30,6 @@ One-time steps after `✅ Installed.`:
 | Allow Hammerspoon to control your keyboard | System Settings → Privacy & Security → **Accessibility** |
 | Allow Hammerspoon to use the microphone | macOS asks the first time you hold Right ⌘ |
 | Allow "System Audio Recording" for audio-level | macOS asks during install (volume check only; nothing recorded) |
-| Keep notification buttons on screen (optional) | System Settings → Notifications → Hammerspoon → **Alerts** |
 | Restart your Claude Code sessions | your terminal |
 | Check everything | `voicekit doctor` |
 
@@ -95,10 +94,14 @@ Toggle with **⌃⌥H** or say "hands free on".
 
 ## When other audio is playing
 If another app is audibly playing sound or using the microphone (music, a video, a call, dictation), automatic messages
-(briefings, alerts, plan summaries, approval questions) are **not spoken**. A silent notification appears instead:
+(briefings, alerts, plan summaries, approval questions) are **not spoken**. Nothing pops up to interrupt you: the HUD
+briefly says "Message held", and the **menu bar icon** shows how many are waiting. Click it to see each one:
 - **Play:** speak it now.
 - **Approve / Deny** (or **Approve plan / Keep planning**): answers the waiting prompt directly.
-- **Dismiss:** closes the notification. The message stays on **⌃⌥P** for 30 minutes.
+- **Dismiss:** removes it. Messages stay for 30 minutes; **⌃⌥P** plays them all.
+
+To also get a macOS notification with buttons, set `"ui": {"held": "notification"}` in
+`~/.config/claude-voice-kit/config.json`.
 
 Anything you ask for yourself (⌃⌥F, ⌃⌥K, replay, replies to voice commands) always plays.
 
@@ -144,9 +147,9 @@ Code asks you to confirm "local development" at each launch.
 - **HUD:** a small dark pop-up near the bottom of the screen. Its colour shows the state: red = listening,
   amber = working, green = done, orange = problem, blue = info. It floats above every app, clicks pass
   through it, and it fades away by itself.
-- **Menu bar icon:** a microphone (crossed out when Claude's voice is off), a dot when hands-free is on, and the
-  number of held messages. Click it for voice on/off, hands-free, play held messages, replay, stop, and the
-  shortcut list.
+- **Menu bar icon:** sound bars (crossed out when Claude's voice is off), a dot when hands-free is on, and the
+  number of held messages. Click it for voice on/off, hands-free, each held message (Play, Approve / Deny, Dismiss),
+  replay, stop, and the shortcut list.
 - To turn either off, set `"ui": {"hud": false}` (back to Hammerspoon's plain alert box) or
   `"ui": {"menubar": false}` in `~/.config/claude-voice-kit/config.json`, then reload Hammerspoon.
 
