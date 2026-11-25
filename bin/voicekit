@@ -468,6 +468,17 @@ def doctor(args, quiet=False):
                         "import sys; sys.path.insert(0, sys.argv[1]); import listend; print(listend.model_path(listend.config()))",
                         LISTEN_DIR], capture_output=True, text=True, timeout=30) if os.path.exists(lpy) else None
     results.append(check("speech-to-text model found locally", bool(r and r.returncode == 0), "voicekit install"))
+    # How long the microphone takes to start recording (logged by listend on every push-to-talk).
+    try:
+        with open(os.path.join(HOME, ".local", "state", "listen-voice", "listend.log"), errors="ignore") as f:
+            times = [int(m) for m in __import__("re").findall(r"mic live (\d+) ms", f.read())][-20:]
+    except OSError:
+        times = []
+    if times:
+        med = sorted(times)[len(times) // 2]
+        results.append(check(f"microphone starts quickly (typically {med} ms)", med < 600,
+                             "the microphone is slow to start: check System Settings → Sound → Input, or set "
+                             "input_device in ~/.config/listen-voice/config.json"))
     for name, target in LINKS.items():
         link = os.path.join(BIN_DIR, name)
         results.append(check(f"command `{name}`", os.path.realpath(link) == os.path.realpath(target), "voicekit install"))

@@ -4,6 +4,8 @@
   listen-voice -f speech.wav            transcribe a file
   listen-voice --start / --stop         push-to-talk: start recording, then stop and print the text
   listen-voice --cancel                 stop recording and discard
+  listen-voice --start --wait-live      return only once the microphone is really recording ("live")
+  listen-voice --trim                   drop what was recorded so far (keep recording)
   listen-voice --record 5               record 5 seconds from the microphone, then print the text
   listen-voice --raw ...                print the model's raw text (no polishing)
   listen-voice --json ...               print the full JSON result (text, raw, seconds, ms)
@@ -58,6 +60,8 @@ def main():
     p.add_argument("--start", action="store_true")
     p.add_argument("--stop", action="store_true")
     p.add_argument("--cancel", action="store_true")
+    p.add_argument("--wait-live", action="store_true")
+    p.add_argument("--trim", action="store_true")
     p.add_argument("--record", type=float, metavar="SECONDS")
     p.add_argument("--status", action="store_true")
     p.add_argument("--wake", choices=["on", "off"])
@@ -82,6 +86,19 @@ def main():
         except OSError:
             pass
         return
+    if a.trim:
+        try:
+            send({"cmd": "trim"}, 5)
+        except OSError:
+            pass
+        return
+    if a.start and a.wait_live:
+        r = request({"cmd": "start", "wait_live": True}, timeout=15)
+        if r.get("cancelled"):
+            print("cancelled")
+            sys.exit(3)
+        print("live" if r.get("live") else "not live")
+        sys.exit(0 if r.get("live") else 4)
     if a.start:
         r = request({"cmd": "start"})
     elif a.stop:

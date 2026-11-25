@@ -4,9 +4,11 @@
 - Polite mode checks whether other apps are **audibly** playing, not just whether their audio channel is open, using a
   small `audio-level` helper (needs System Audio Recording permission). A silent browser tab (e.g. Discord in Safari)
   or dictation app no longer holds every message. macOS's system-sound helper is ignored by default.
-- Right ⌘ push-to-talk starts listening only after the key is held alone for 0.3 s (with a soft tick), so shortcuts
-  like Right ⌘ + Delete no longer stop speech or open the microphone. Key, delay and tick are configurable
-  (`push_to_talk`).
+- Right ⌘ push-to-talk counts as a voice command only after the key is held alone for 0.3 s, so shortcuts like
+  Right ⌘ + Delete no longer stop speech or flash the pop-up. Key, delay and tick are configurable (`push_to_talk`).
+- Push-to-talk no longer loses the first or last word: the microphone starts on key-down (discarded for shortcuts),
+  the "Listening…" pop-up and tick appear only once it is really recording, Claude's own voice is trimmed from the
+  start, and recording continues 0.15 s after release. `voicekit doctor` reports how fast the microphone starts.
 - New on-screen HUD replaces Hammerspoon's plain alert box: our own line icons, a colour for each state
   (listening, transcribing, done, problem), animated listening bars and spinner, fades in and out.
 - New menu bar icon (sound bars): voice on/off, hands-free, held-message count, and a menu with the hotkey actions.

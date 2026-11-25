@@ -47,8 +47,11 @@ One-time steps after `✅ Installed.`:
 | ⌃⌥K | read the selected text in any app |
 | fn | stop speaking (fn is the usual dictation key, so you're never talked over) |
 
-Listening starts only after Right ⌘ has been held **on its own** for 0.3 s, so shortcuts such as Right ⌘ + Delete or
-Right ⌘ + C never stop speech, open the microphone or flash the strip. Wait for the tick, then speak. To change the key,
+The microphone starts the moment you press Right ⌘, so your first word isn't lost. It only becomes a voice command
+once the key has been held **on its own** for 0.3 s: then Claude stops talking, and the tick and "Listening…" pop-up
+appear as soon as the microphone is really recording. Shortcuts such as Right ⌘ + Delete or Right ⌘ + C are typed
+within that time: the audio is thrown away and nothing is shown (the orange microphone dot may flash briefly).
+Recording continues 0.15 s after you let go, so the last word isn't clipped. To change the key,
 the delay or the tick, set `push_to_talk` in `~/.config/claude-voice-kit/config.json`, then reload Hammerspoon:
 
 ```json

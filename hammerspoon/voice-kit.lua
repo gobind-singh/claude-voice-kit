@@ -23,7 +23,7 @@ if voiceKit then
   local old = voiceKit
   for _, h in ipairs(old.hotkeys or {}) do pcall(function() h:delete() end) end
   for _, k in ipairs({ "pttWatcher", "fnWatcher", "recorder" }) do pcall(function() old[k]:stop() end) end
-  if old.armTimer then pcall(function() old.armTimer:stop() end) end
+  for _, k in ipairs({ "armTimer", "slowTimer" }) do if old[k] then pcall(function() old[k]:stop() end) end end
   if old.hud then pcall(old.hud.destroy) end
   if old.menu then pcall(old.menu.stop) end
 end
@@ -173,19 +173,59 @@ end
 if hs.fs.attributes(os.getenv("HOME") .. "/.local/state/claude-voice-kit/handsfree") then
   run(VK.listen, { "--wake", "on" })
 end
-local function disarm()
+-- Push-to-talk, step by step:
+--   key down (alone)  → the microphone starts quietly at once, so the first word is never lost
+--   held alone for hold_ms → it's a voice command: Claude's speech stops, and the "Listening…" pop-up and
+--                       tick appear as soon as the microphone is really recording (never before)
+--   another key or modifier before then (Right ⌘ + Delete) → the audio is thrown away, nothing is shown
+--   released          → recording continues 0.15 s (listen-voice tail_ms), then it's transcribed
+VK.pttState = nil              -- nil | "arming" | "recording"
+local function stopTimers()
   if VK.armTimer then VK.armTimer:stop(); VK.armTimer = nil end
+  if VK.slowTimer then VK.slowTimer:stop(); VK.slowTimer = nil end
 end
-local function startListening()
-  VK.armTimer = nil
-  VK.recording = true
-  kokoro({ "--stop" })                                   -- don't record our own voice
-  run(VK.listen, { "--start" })
+local function showListening()
+  if VK.pttState ~= "recording" or not VK.micLive or VK.pttShown then return end
+  VK.pttShown = true
+  if VK.slowTimer then VK.slowTimer:stop(); VK.slowTimer = nil end
   if VK.ptt.cue_sound and VK.ptt.cue_sound ~= "" then
     local cue = hs.sound.getByName(VK.ptt.cue_sound)
     if cue then cue:volume(0.4):play() end
   end
-  HUD.show("listening", "Listening\u{2026}", "Release " .. PTT_LABEL .. " when done", 30)
+  HUD.show("listening", "Listening\u{2026}", "Release " .. PTT_LABEL .. " when done", 60)
+end
+local function cancelPtt()
+  stopTimers()
+  if VK.pttState then run(VK.listen, { "--cancel" }) end
+  if VK.pttShown then HUD.hide(0.1) end
+  VK.pttState, VK.recording, VK.micLive, VK.pttShown = nil, false, false, false
+end
+local function confirmPtt()                          -- held long enough: it's a voice command
+  VK.armTimer = nil
+  VK.pttState, VK.recording = "recording", true
+  kokoro({ "--stop" })                                 -- stop Claude talking over you
+  if VK.ttsWasSpeaking then run(VK.listen, { "--trim" }) end   -- drop Claude's voice from the recording
+  showListening()
+  if not VK.pttShown then                              -- mic still starting (service waking up)
+    VK.slowTimer = hs.timer.doAfter(0.6, function()
+      VK.slowTimer = nil
+      if VK.pttState == "recording" and not VK.pttShown then
+        HUD.show("transcribing", "Starting microphone\u{2026}", "Speak after the tick", 10)
+      end
+    end)
+  end
+end
+local function beginPtt()
+  VK.pttState, VK.micLive, VK.pttShown, VK.ttsWasSpeaking = "arming", false, false, false
+  run(VK.kokoro, { "--is-speaking" }, function(code) VK.ttsWasSpeaking = code == 0 end)
+  run(VK.listen, { "--start", "--wait-live" }, function(code, out)
+    if VK.pttState and code == 0 and (out or ""):find("^live") then
+      VK.micLive = true
+      showListening()
+    end
+  end)
+  if VK.ptt.hold_ms == 0 then confirmPtt()
+  else VK.armTimer = hs.timer.doAfter(VK.ptt.hold_ms / 1000, confirmPtt) end
 end
 local function onlyPttHeld(f)
   if not f[PTT_FLAG] then return false end
@@ -197,26 +237,21 @@ end
 VK.pttWatcher = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged, hs.eventtap.event.types.keyDown }, function(e)
   local t = e:getType()
   if t == hs.eventtap.event.types.keyDown then
-    disarm()                                             -- a shortcut (e.g. Right ⌘ + Delete): do nothing
-    if VK.recording then                                 -- key used as a modifier while recording: cancel
-      VK.recording = false
-      run(VK.listen, { "--cancel" })
-      HUD.hide(0.1)
-    end
+    if VK.pttState then cancelPtt() end              -- a shortcut (Right ⌘ + Delete) or typing: discard
     return false
   end
   local f = e:getFlags()
   if e:getKeyCode() ~= PTT_KEY then
-    if VK.armTimer and not onlyPttHeld(f) then disarm() end   -- another modifier joined in
+    if VK.pttState == "arming" and not onlyPttHeld(f) then cancelPtt() end   -- another modifier joined in
     return false
   end
-  if onlyPttHeld(f) and not VK.recording and not VK.armTimer then
-    if VK.ptt.hold_ms == 0 then startListening()
-    else VK.armTimer = hs.timer.doAfter(VK.ptt.hold_ms / 1000, startListening) end
-  elseif not f[PTT_FLAG] and VK.armTimer then           -- quick tap: released before listening started
-    disarm()
-  elseif not f[PTT_FLAG] and VK.recording then
-    VK.recording = false
+  if onlyPttHeld(f) and not VK.pttState then
+    beginPtt()
+  elseif not f[PTT_FLAG] and VK.pttState == "arming" then   -- quick tap: released before it counted
+    cancelPtt()
+  elseif not f[PTT_FLAG] and VK.pttState == "recording" then
+    stopTimers()
+    VK.pttState, VK.recording, VK.micLive, VK.pttShown = nil, false, false, false
     HUD.show("transcribing", "Transcribing\u{2026}", nil, 15)
     run(VK.listen, { "--stop" }, function(code, out)
       local text = (out or ""):gsub("^%s+", ""):gsub("%s+$", "")

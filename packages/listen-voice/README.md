@@ -8,6 +8,8 @@ Claude-specific.
     listen-voice -f speech.wav       transcribe a file
     listen-voice --start / --stop    push-to-talk: start recording, then stop and print the text
     listen-voice --cancel            stop and discard
+    listen-voice --start --wait-live return only once the microphone is really recording (prints "live")
+    listen-voice --trim              drop the audio recorded so far and keep recording
     listen-voice --record 5          record 5 seconds, then print the text
     listen-voice --raw | --json      unpolished text / full result (text, raw, seconds, ms)
     listen-voice --wake on|off       hands-free: listen continuously for the wake phrase
@@ -33,6 +35,7 @@ Claude-specific.
 |---|---|---|
 | `model_repo` / `model_file` / `model_path` | Parakeet unified EN Q8 | which GGUF to use (`model_path` overrides) |
 | `input_device` | system default | microphone |
+| `tail_ms` | `150` | push-to-talk keeps recording this long after `--stop`, so the last word isn't clipped |
 | `vocabulary` | `[]` | exact spellings to enforce, e.g. `["herdr", "Kokoro"]` |
 | `aliases` | `{}` | corrections, e.g. `{"harder": "herdr"}` |
 | `wake.words` | `hey claude`, `okay claude` | wake phrases |
