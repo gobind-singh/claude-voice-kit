@@ -46,7 +46,9 @@ Voices: names starting `af_`/`am_` are American English and `bf_`/`bm_` are Brit
 | `idle_unload_minutes` | `10` | free the model's memory after this many quiet minutes (0 = never) |
 | `idle_exit_minutes` | `20` | quit the whole service after this many quiet minutes (0 = never) |
 | `when_other_audio` | `hold` | `hold`: polite messages wait while another app plays or records audio; `play`: always speak |
-| `ignore_output_processes` | `[]` | apps that keep a silent output channel open; their output is ignored, their microphone use still counts |
+| `audible_threshold_db` | `-50` | an app that only has output open counts as playing only if it's louder than this (dBFS); `null` = any open channel counts |
+| `level_check_ms` | `250` | how long the volume check listens |
+| `ignore_output_processes` | `systemsoundserverd` | apps whose output is always ignored (their microphone use still counts) |
 | `ignore_processes` | `coreaudiod` | apps that never count as "other audio" |
 | `held_expire_minutes` | `30` | how long held messages are kept |
 | `notify_command` | – | command run with a held message (base64 JSON), e.g. to show a notification |
@@ -83,6 +85,11 @@ whenever it's installed, and ~500 MB of disk.
 - `voiced.py`: the service (log: `~/.local/state/kokoro-voice/voiced.log`)
 - `kokoro`: the command (Python standard library only)
 - `audio_activity.py`: which apps are using audio, via CoreAudio's per-process list (macOS 14.2+, ctypes)
+- `audio_level.swift`: the `audio-level` helper. macOS reports *open* audio channels, and many apps keep one open in
+  silence (a Discord tab in Safari, dictation apps). The helper listens to those apps' output for 0.25 s through a
+  Core Audio process tap and reports the peak level, so only real sound holds messages. It only measures volume and
+  stores nothing. It needs **System Audio Recording** permission; `voicekit install` builds it (Xcode command-line
+  tools) and asks once. Without it, every open channel counts, as before.
 - LaunchAgent `~/Library/LaunchAgents/com.claude-voice-kit.kokoro.plist` (installed by `voicekit install` from `launchd/kokoro.plist.template`): starts at login, restarts after a crash, runs offline (`HF_HUB_OFFLINE=1`)
 
 ## Install / uninstall

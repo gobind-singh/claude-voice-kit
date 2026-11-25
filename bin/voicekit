@@ -254,6 +254,43 @@ def migrate_old_data():
 
 
 # ---------------------------------------------------------------- commands
+def build_level_helper():
+    """Build the `audio-level` helper (tells a silent open audio channel from real sound) and make sure it has
+    macOS's System Audio Recording permission. Rebuilt only when its source changes, because every rebuild
+    gets a new code signature and macOS would ask for the permission again."""
+    import hashlib
+    src = os.path.join(KOKORO_DIR, "audio_level.swift")
+    plist = os.path.join(KOKORO_DIR, "audio_level.plist")
+    out = os.path.join(KOKORO_DIR, ".build", "audio-level")
+    digest = hashlib.sha256(open(src, "rb").read() + open(plist, "rb").read()).hexdigest()
+    stamp = out + ".sha256"
+    if not (os.path.exists(out) and os.path.exists(stamp) and open(stamp).read().strip() == digest):
+        swiftc = subprocess.run(["xcrun", "--find", "swiftc"], capture_output=True, text=True).stdout.strip()
+        if not swiftc:
+            return say("⚠️  Swift compiler not found (xcode-select --install): the volume check is off, so apps with "
+                       "a silent audio channel open will still hold messages")
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        r = subprocess.run([swiftc, "-O", "-target", "arm64-apple-macos14.2", src, "-o", out, "-Xlinker", "-sectcreate",
+                            "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", plist],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            return say("⚠️  couldn't build the volume-check helper (needs macOS 14.2+ SDK): " + r.stderr[-300:])
+        subprocess.run(["codesign", "-s", "-", "-f", "-i", "com.claude-voice-kit.audio-level", out],
+                       capture_output=True)
+        with open(stamp, "w") as f:
+            f.write(digest)
+        say("volume-check helper built")
+    perm = subprocess.run([out, "--status"], capture_output=True, text=True).stdout
+    if '"granted"' in perm:
+        return say("volume check ready (System Audio Recording allowed)")
+    say("macOS will ask to allow 'System Audio Recording' for the volume check. It only measures how loud other"
+        " apps are, so a silent browser tab doesn't hold messages. Nothing is recorded.")
+    granted = '"granted":true' in subprocess.run([out, "--request"], capture_output=True, text=True).stdout
+    say("volume check ready" if granted else
+        "⚠️  permission not given: every open audio channel counts as playing. Allow it later in System Settings →"
+        " Privacy & Security → Screen & System Audio Recording, or re-run `voicekit install`")
+
+
 def install(args):
     print(f"claude-voice-kit install  ({KIT})")
     step("checking this Mac")
@@ -305,12 +342,18 @@ def install(args):
     # Held messages (other audio playing) are shown as a notification with buttons via Hammerspoon.
     kcfg["notify_command"] = ["python3", os.path.join(KIT, "claude", "notify_held.py")]
     pats = kcfg.setdefault("ignore_processes", [r"\bcoreaudiod\b"])
-    kcfg.setdefault("ignore_output_processes", [])   # apps that keep a silent output channel open (see README)
+    # apps that keep a silent output channel open (see README); macOS's system-sound helper always does
+    outs = kcfg.setdefault("ignore_output_processes", [])
+    if r"\bsystemsoundserverd\b" not in outs:
+        outs.append(r"\bsystemsoundserverd\b")
     if r"listen-voice/recorder\.py" not in pats:
         pats.append(r"listen-voice/recorder\.py")          # our own microphone doesn't count as other audio
     os.makedirs(os.path.dirname(kcfg_path), exist_ok=True)
     with open(kcfg_path, "w") as f:
         json.dump(kcfg, f, indent=2)
+
+    step("volume check for other apps' audio")
+    build_level_helper()
 
     step("linking commands into ~/.local/bin")
     os.makedirs(BIN_DIR, exist_ok=True)
@@ -440,6 +483,12 @@ def doctor(args, quiet=False):
     results.append(check("other-audio detection (hold messages instead of talking over music/calls)",
                          bool(r and r.returncode == 0 and "unsupported" not in r.stdout),
                          "needs macOS 14.2+; messages will be spoken as usual"))
+    sys.path.insert(0, KOKORO_DIR)
+    import audio_activity
+    perm = audio_activity.level_permission()
+    results.append(check("volume check (a silent browser tab or app doesn't hold messages)", perm == "granted",
+                         {"missing": "helper not built: run `voicekit install` (needs Xcode command-line tools)"}
+                         .get(perm, "allow System Audio Recording for audio-level: run `voicekit install`")))
     if os.path.exists("/Applications/Hammerspoon.app") and not quiet:
         print("     tip: for Play/Approve/Deny buttons to stay on screen, set System Settings → Notifications →"
               " Hammerspoon → Alerts")

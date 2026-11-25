@@ -144,6 +144,13 @@ def main():
         print("\n".join(f"{x['name']} (pid {x['pid']}): {'playing' if x['output'] else ''}"
                         f"{' + ' if x['output'] and x['input'] else ''}{'microphone' if x['input'] else ''}"
                         for x in apps) or "quiet: no other app is using audio")
+        for x in r.get("silent") or []:
+            print(f"{x['name']} (pid {x['pid']}): output open but silent (ignored)")
+        lc = r.get("level_check")
+        if lc != "granted":
+            print({"missing": "volume check: helper not built (run `voicekit install`); open channels count as playing",
+                   }.get(lc, "volume check: no System Audio Recording permission (run `voicekit install`);"
+                             " open channels count as playing"))
         return
     if a.held:
         try:
