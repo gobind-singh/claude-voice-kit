@@ -513,6 +513,8 @@ def doctor(args, quiet=False):
                              "System Settings → Privacy & Security → Accessibility → enable Hammerspoon"))
         n = hs_query("return voiceKit and #voiceKit.hotkeys or 0", retries=15)
         results.append(check(f"hotkeys active ({n or 0})", n not in ("", "0"), "open Hammerspoon, then Reload Config"))
+        hud = hs_query("return voiceKit and voiceKit.hud and 'yes' or 'no'", retries=5)
+        results.append(check("on-screen HUD loaded", hud == "yes", "open Hammerspoon, then Reload Config"))
     else:
         check("Hammerspoon (optional, for hotkeys)", False, "voicekit install  (installs it with Homebrew)")
     return all(results)

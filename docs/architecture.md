@@ -54,7 +54,7 @@
      send prompt ────► voice channel (Claude Code Channels, any terminal) → herdr → any window
      focus / Esc ────► adapters: herdr · any window (Hammerspoon)
    attention: needs permission > failed > done ─► kokoro (one voice by default, optionally a voice per agent)
-   on-screen strip ("Heard: approve → builder ✓") · audit log
+   on-screen HUD ("Approved · Heard “approve builder”") · menu bar icon · audit log
 ```
 
 ### Voice-control rules
