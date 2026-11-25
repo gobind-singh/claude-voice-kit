@@ -120,5 +120,9 @@
   - `voicekit doctor` flags hooks that point at missing scripts
   - unit tests cover all three
 - A Ruby gem also installs a `listen` command, so ours is called `listen-voice`.
+- **Right ⌘ is also a shortcut key** (Right ⌘ + Delete deletes a line). Starting to listen on key-down stopped speech,
+  opened the microphone and flashed the strip for every shortcut, even though the recording was then cancelled.
+  Listening now starts only after the key is held alone for `push_to_talk.hold_ms` (300 ms), marked by a soft tick;
+  any key press or other modifier within that time disarms it.
 - The approval hook records the exact request ("run rm x.txt"). The generic Notification message must not overwrite it,
   because the risky check depends on it.

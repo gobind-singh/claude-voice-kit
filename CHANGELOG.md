@@ -4,6 +4,9 @@
 - Polite mode checks whether other apps are **audibly** playing, not just whether their audio channel is open, using a
   small `audio-level` helper (needs System Audio Recording permission). A silent browser tab (e.g. Discord in Safari)
   or dictation app no longer holds every message. macOS's system-sound helper is ignored by default.
+- Right ⌘ push-to-talk starts listening only after the key is held alone for 0.3 s (with a soft tick), so shortcuts
+  like Right ⌘ + Delete no longer stop speech or open the microphone. Key, delay and tick are configurable
+  (`push_to_talk`).
 - Licence changed to MIT.
 
 ## 0.1.0: first release

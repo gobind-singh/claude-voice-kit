@@ -94,7 +94,7 @@ Then ask Claude anything and listen for the briefing, or hold **Right ⌘** and 
 ## Everyday keys
 | Key | Does |
 |---|---|
-| **Right ⌘** (hold) | speak a command |
+| **Right ⌘** (hold) | speak a command after the tick; quick shortcuts like Right ⌘ + Delete are left alone |
 | ⌃⌥ **F** / **N** | read the whole reply / skip to the next section |
 | ⌃⌥ **R** / **S** | repeat / stop |
 | ⌃⌥ **V** / **H** | voice on/off / hands-free on/off |

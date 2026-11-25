@@ -28,6 +28,9 @@ DEFAULTS = {
     "alerts": {"permission": True, "question": True, "idle": False},
     "summary": {"model": "haiku", "short_reply_chars": 250, "speak_project_name": True},
     "full_read": {"keep_replies": 10},
+    # Hammerspoon push-to-talk: key = right_cmd | right_option | right_shift | right_ctrl; listening starts after the
+    # key is held alone for hold_ms, so quick shortcuts (Right ⌘ + Delete) never trigger it; cue_sound "" = silent
+    "push_to_talk": {"key": "right_cmd", "hold_ms": 300, "cue_sound": "Tink"},
     "control": {
         "approval_timeout_seconds": 20,     # hands-free: wait this long for a spoken answer
         "confirm_risky": True,              # risky commands need "yes, approve"
