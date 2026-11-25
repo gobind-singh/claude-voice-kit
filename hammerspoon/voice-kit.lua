@@ -419,6 +419,10 @@ end)
 VK.fnWatcher:start()
 
 -- Menu bar icon: voice on/off, hands-free, held messages, and the same actions as the hotkeys.
+-- Hammerspoon's own icon is hidden to save menu bar space (the notch hides icons that don't fit);
+-- "ui": {"hammerspoon_icon": true} shows it again.
+if ui.menubar ~= false and ui.hammerspoon_icon ~= true then hs.menuIcon(false) end
+if ui.hammerspoon_icon == true then hs.menuIcon(true) end
 if ui.menubar ~= false then
   VK.menu = dofile(VK.dir .. "/hammerspoon/menubar.lua")(VK, Icons).start()
 end

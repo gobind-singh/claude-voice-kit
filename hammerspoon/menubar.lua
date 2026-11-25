@@ -180,6 +180,7 @@ return function(VK, Icons)
       { title = "Speed", menu = speedMenu(tonumber(kc.speed) or 1.0) },
       { title = "-" },
       { title = "Keyboard shortcuts", image = img("keyboard"), menu = shortcutsMenu() },
+      { title = "Reload hotkeys", fn = function() hs.reload() end },
     }) do table.insert(m, e) end
     return m
   end
@@ -194,9 +195,13 @@ return function(VK, Icons)
       .. (s.held > 0 and (" · " .. s.held .. " held") or ""))
   end
 
-  function MB.start()
+  local POSITION_KEY = "NSStatusItem Preferred Position claude-voice-kit"
+
+  local function create()
+    for _, w in ipairs(MB.watchers or {}) do w:stop() end
+    if MB.poll then MB.poll:stop() end
     MB.item = hs.menubar.new(true, "claude-voice-kit")
-    if not MB.item then return MB end
+    if not MB.item then return end
     MB.menu = menu
     MB.item:setMenu(menu)
     MB.later = hs.timer.delayed.new(0.3, MB.refresh)
@@ -208,10 +213,54 @@ return function(VK, Icons)
     end
     MB.poll = hs.timer.doEvery(60, MB.refresh)   -- held messages expire without a file change
     MB.refresh()
+  end
+
+  -- Where the system icons (battery, Wi-Fi, Control Centre, clock …) begin, in screen points from the left.
+  local function systemIconsLeft()
+    local left
+    for _, name in ipairs({ "com.apple.controlcenter", "com.apple.systemuiserver" }) do
+      local app = hs.application.get(name)
+      local ok, ax = pcall(function() return app and hs.axuielement.applicationElement(app) end)
+      local bar = ok and ax and ax:attributeValue("AXExtrasMenuBar")
+      for _, item in ipairs(bar and bar:attributeValue("AXChildren") or {}) do
+        local pos = item:attributeValue("AXPosition")
+        if pos and (not left or pos.x < left) then left = pos.x end
+      end
+    end
+    return left
+  end
+
+  -- macOS's "preferred position" is the distance from the right edge of the screen to the icon's right edge.
+  local function targetPosition()
+    local left = systemIconsLeft()
+    local screen = hs.screen.primaryScreen():fullFrame()
+    return left and math.max(0, screen.x + screen.w - left + 2) or 400
+  end
+
+  function MB.start()
+    create()
+    -- MacBook notch: macOS hides menu bar icons that don't fit, leftmost (newest) first. The first time,
+    -- move ours right next to the system icons. macOS then remembers the position under the icon's name,
+    -- so a later ⌘-drag by the user is kept. macOS writes an icon's position a moment after it's removed
+    -- (also during a Hammerspoon reload), so this runs a little later: remove, set the position, re-add.
+    if not hs.settings.get("voicekit.menubarPlaced") then
+      MB.placeTimer = hs.timer.doAfter(2, function()
+        local target = targetPosition()
+        hs.settings.set(POSITION_KEY, target)
+        if MB.item then MB.item:delete(); MB.item = nil end
+        MB.placeTimer = hs.timer.doAfter(0.8, function()
+          MB.placeTimer = nil
+          hs.settings.set(POSITION_KEY, target)
+          create()
+          hs.settings.set("voicekit.menubarPlaced", true)
+        end)
+      end)
+    end
     return MB
   end
 
   function MB.stop()
+    if MB.placeTimer then MB.placeTimer:stop(); MB.placeTimer = nil end
     for _, w in ipairs(MB.watchers or {}) do w:stop() end
     if MB.poll then MB.poll:stop() end
     if MB.later then MB.later:stop() end

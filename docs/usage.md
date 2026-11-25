@@ -168,6 +168,9 @@ Code asks you to confirm "local development" at each launch.
   number of held messages. Click it for voice on/off, hands-free, each held message (Play, Approve / Deny, Dismiss),
   replay, stop, **Voice** (pick any Kokoro voice; you hear a short sample), **Speed**, and **Keyboard shortcuts**
   (choose one to change it).
+- **MacBook notch:** macOS hides menu bar icons that don't fit beside the notch, leftmost first. The first time, the kit
+  places its icon directly left of the system icons (battery, Wi-Fi, Control Centre, clock), and hides Hammerspoon's own icon to save space
+  (`"ui": {"hammerspoon_icon": true}` shows it again). To move the icon, hold ⌘ and drag it; your position is kept.
 - To turn either off, set `"ui": {"hud": false}` (back to Hammerspoon's plain alert box) or
   `"ui": {"menubar": false}` in `~/.config/claude-voice-kit/config.json`, then reload Hammerspoon.
 

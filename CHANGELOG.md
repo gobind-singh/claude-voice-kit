@@ -18,6 +18,8 @@
 - Shortcuts can be changed: from the menu bar (choose one, press the new keys), with `voicekit keys`, or in
   config.json (`shortcuts`). Clashes with macOS, common app shortcuts and other kit shortcuts are refused.
 - Choose the voice (with a spoken sample) and the speed from the menu bar icon.
+- The menu bar icon is placed directly left of the system icons so the MacBook notch doesn't hide it, and
+  Hammerspoon's own icon is hidden to save space.
 - Licence changed to MIT.
 
 ## 0.1.0: first release

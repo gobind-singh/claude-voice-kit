@@ -47,7 +47,8 @@ DEFAULTS = {
     },
     # Read by hammerspoon/voice-kit.lua: hud = custom pop-up (false: plain hs.alert); menubar = menu bar icon;
     # held = "quiet" (count + list in the menu bar icon) or "notification" (also a macOS notification with buttons)
-    "ui": {"hud": True, "menubar": True, "held": "quiet"},
+    # hammerspoon_icon = show Hammerspoon's own menu bar icon too (hidden by default to save space by the notch)
+    "ui": {"hud": True, "menubar": True, "held": "quiet", "hammerspoon_icon": False},
 }
 
 
