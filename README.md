@@ -27,7 +27,7 @@ instead of switching windows. Speech recognition and speech generation run local
 | 🎙️ **Voice commands** | Hold **Right ⌘** and say *"what's happening"*, *"approve"*, *"tell docs to run the tests"*, *"switch to api"*. |
 | 🎧 **Hands-free** | Say *"hey Claude, …"* with no key. Answer permission prompts out loud. Say *"stop"* to interrupt. |
 | 🧭 **Multi-agent** | Every session is tracked by name. A **leader** agent can split work across worker agents. |
-| 🤫 **Polite** | Music, a video or a call playing? Nothing is spoken; you get a silent notification with **Play / Approve / Deny**. |
+| 🤫 **Polite** | Music, a video or a call playing? Nothing is spoken; the menu bar icon counts held messages, each with **Play / Approve / Deny**. |
 
 ## How it works
 ```mermaid
@@ -62,7 +62,7 @@ flowchart LR
     H --> KV
     VC --> KV
     KV --> S
-    KV -. "other audio playing" .-> N["🔕 silent notification<br/>Play · Approve · Deny"]
+    KV -. "other audio playing" .-> N["🔕 held quietly<br/>menu bar: Play · Approve · Deny"]
 ```
 
 - **Listening:** hold Right ⌘ (or say "hey Claude"). `listen-voice` transcribes locally in about 0.1 s and polishes the
@@ -101,7 +101,8 @@ Then ask Claude anything and listen for the briefing, or hold **Right ⌘** and 
 | ⌃⌥ **P** | play messages held during other audio |
 | ⌃⌥ **K** | read the selected text in any app |
 
-⌃ = Control, ⌥ = Option, ⌘ = Command. Every voice command, setting and troubleshooting tip is in **[docs/usage.md](docs/usage.md)**.
+⌃ = Control, ⌥ = Option, ⌘ = Command. Change any shortcut, the voice or the speed from the menu bar icon (or
+`voicekit keys`). Every voice command, setting and troubleshooting tip is in **[docs/usage.md](docs/usage.md)**.
 
 ## Safe by design
 - **No new approvals:** voice only answers prompts Claude Code already shows. Risky commands (`rm`, `git push`, `sudo`,
@@ -126,7 +127,7 @@ bin/                        voicekit (install · doctor · status), claude-voice
 packages/kokoro-voice/      text-to-speech service + `kokoro` CLI (standalone)
 packages/listen-voice/      speech-to-text service + `listen-voice` CLI (standalone)
 claude/                     Claude Code layer: hooks, voicectl router, registry, adapters
-hammerspoon/                hotkeys, push-to-talk, on-screen HUD, menu bar icon, notifications
+hammerspoon/                hotkeys, push-to-talk, on-screen HUD, menu bar icon
 docs/                       usage, architecture, publishing, third-party licences
 tests/ · scripts/           unit tests · privacy check
 ```

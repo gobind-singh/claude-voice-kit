@@ -47,6 +47,7 @@ DEFAULTS = {
     "input_device": None,           # None = system default microphone
     "max_seconds": 60,
     "min_seconds": 0.3,
+    "tail_ms": 150,                 # push-to-talk: keep recording this long after the key is released
     "silence_rms": 0.003,           # quieter than this is treated as "nothing said"
     "vocabulary": [],               # exact spellings to enforce, e.g. ["herdr", "Kokoro"]
     "aliases": {},                  # misheard -> right, e.g. {"harder": "herdr"}
@@ -160,6 +161,7 @@ def load_wav(path):
 class Recorder:
     def __init__(self, max_seconds, on_block=None):
         self.on_block, self.blocks, self.started_at = on_block, [], 0.0
+        self.live = threading.Event()                 # set when the first audio arrives (mic really on)
         self.proc = subprocess.Popen(
             [sys.executable, RECORDER, json.dumps(config()["input_device"]), str(max_seconds)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -172,6 +174,11 @@ class Recorder:
             if not data:
                 break
             arr = np.frombuffer(data[: len(data) - len(data) % 4], dtype=np.float32)
+            if not self.live.is_set() and self.started_at:
+                self.live_ms = int((time.time() - self.started_at) * 1000)
+                self.live.set()
+                if not self.on_block:
+                    log(f"mic live {self.live_ms} ms after start")
             if self.on_block:
                 self.on_block(arr)
             else:
@@ -218,19 +225,35 @@ def _prepare_spare():
 
 
 # ---------- push-to-talk ----------
-def start_recording():
+def start_recording(wait_live=False):
+    """Start push-to-talk recording. wait_live: return only once audio is actually arriving (up to 2 s),
+    so the caller can show "Listening…" at the moment the microphone is really on."""
     global current, spare, early_stop_at
     with lock:
         if current is not None:
-            return {"ok": True, "already": True}
-        if time.time() - early_stop_at < 3:            # its "stop" already came: don't open the mic
+            r = current
+        elif time.time() - early_stop_at < 3:            # its "stop" already came: don't open the mic
             early_stop_at = 0.0
             return {"ok": True, "cancelled": True}
-        r = spare if spare is not None and spare.proc.poll() is None else Recorder(config()["max_seconds"] + 2)
-        spare = None
-        r.start()
-        current = r
-    threading.Thread(target=warm_model, daemon=True).start()   # load while the user is talking
+        else:
+            r = spare if spare is not None and spare.proc.poll() is None else Recorder(config()["max_seconds"] + 2)
+            spare = None
+            r.start()
+            current = r
+            threading.Thread(target=warm_model, daemon=True).start()   # load while the user is talking
+    if not wait_live:
+        return {"ok": True}
+    live = r.live.wait(2.0)
+    if current is not r:
+        return {"ok": True, "cancelled": True}
+    return {"ok": True, "live": live, "ms": getattr(r, "live_ms", None)}
+
+
+def trim_recording():
+    """Drop the audio recorded so far (e.g. our own voice, recorded before speech was stopped)."""
+    with lock:
+        if current is not None:
+            current.blocks = []
     return {"ok": True}
 
 
@@ -249,6 +272,8 @@ def stop_recording(transcribe_it=True, raw=False):
         if r is None:
             early_stop_at = time.time()                # start may still be on its way: cancel it
             return {"ok": False, "error": "not recording"}
+    if transcribe_it and config().get("tail_ms", 0) > 0:
+        time.sleep(config()["tail_ms"] / 1000)         # don't clip the last word
     audio = r.stop()
     threading.Thread(target=_prepare_spare, daemon=True).start()
     if not transcribe_it:
@@ -374,7 +399,9 @@ def handle(req):
     cmd = req.get("cmd")
     last_used = time.time()
     if cmd == "start":
-        return start_recording()
+        return start_recording(req.get("wait_live", False))
+    if cmd == "trim":
+        return trim_recording()
     if cmd == "stop":
         return stop_recording(True, req.get("raw", False))
     if cmd == "cancel":

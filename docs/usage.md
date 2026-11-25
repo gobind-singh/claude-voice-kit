@@ -30,7 +30,6 @@ One-time steps after `✅ Installed.`:
 | Allow Hammerspoon to control your keyboard | System Settings → Privacy & Security → **Accessibility** |
 | Allow Hammerspoon to use the microphone | macOS asks the first time you hold Right ⌘ |
 | Allow "System Audio Recording" for audio-level | macOS asks during install (volume check only; nothing recorded) |
-| Keep notification buttons on screen (optional) | System Settings → Notifications → Hammerspoon → **Alerts** |
 | Restart your Claude Code sessions | your terminal |
 | Check everything | `voicekit doctor` |
 
@@ -48,14 +47,30 @@ One-time steps after `✅ Installed.`:
 | ⌃⌥K | read the selected text in any app |
 | fn | stop speaking (fn is the usual dictation key, so you're never talked over) |
 
-Listening starts only after Right ⌘ has been held **on its own** for 0.3 s, so shortcuts such as Right ⌘ + Delete or
-Right ⌘ + C never stop speech, open the microphone or flash the strip. Wait for the tick, then speak. To change the key,
+The microphone starts the moment you press Right ⌘, so your first word isn't lost. It only becomes a voice command
+once the key has been held **on its own** for 0.3 s: then Claude stops talking, and the tick and "Listening…" pop-up
+appear as soon as the microphone is really recording. Shortcuts such as Right ⌘ + Delete or Right ⌘ + C are typed
+within that time: the audio is thrown away and nothing is shown (the orange microphone dot may flash briefly).
+Recording continues 0.15 s after you let go, so the last word isn't clipped. To change the key,
 the delay or the tick, set `push_to_talk` in `~/.config/claude-voice-kit/config.json`, then reload Hammerspoon:
 
 ```json
 "push_to_talk": {"key": "right_cmd", "hold_ms": 300, "cue_sound": "Tink"}
 ```
 `key` can be `right_cmd`, `right_option`, `right_shift` or `right_ctrl`. `cue_sound` is any macOS sound name, or `""` for none.
+
+### Change your shortcuts
+Every ⌃⌥ shortcut above can be changed or turned off. Three ways:
+- **Menu bar icon → Keyboard shortcuts:** choose one, then press the new keys. **Esc** cancels; **Delete** turns it off.
+- **Terminal:** `voicekit keys` lists them. `voicekit keys set read_full cmd+shift+F` changes one,
+  `voicekit keys off read_selection` turns one off, and `voicekit keys reset` restores the defaults.
+- **Config file:** `"shortcuts": {"read_full": "cmd+shift+F", "read_selection": null}` in
+  `~/.config/claude-voice-kit/config.json`.
+
+Write keys as modifiers plus one key: `ctrl` (⌃), `alt`/`option` (⌥), `shift` (⇧), `cmd` (⌘), then a letter, digit,
+F1–F20, `space`, `return`, an arrow or punctuation. Shortcuts macOS or most apps already use (⌘Q, ⌘C, ⌘Space, …) and
+keys already used by another kit action are refused with a message. `voicekit doctor` warns if a shortcut couldn't be
+registered because another app holds it.
 
 ## Voice commands
 Hold **Right ⌘**, or say **"hey Claude, …"** in hands-free mode.
@@ -95,10 +110,14 @@ Toggle with **⌃⌥H** or say "hands free on".
 
 ## When other audio is playing
 If another app is audibly playing sound or using the microphone (music, a video, a call, dictation), automatic messages
-(briefings, alerts, plan summaries, approval questions) are **not spoken**. A silent notification appears instead:
+(briefings, alerts, plan summaries, approval questions) are **not spoken**. Nothing pops up to interrupt you: the HUD
+briefly says "Message held", and the **menu bar icon** shows how many are waiting. Click it to see each one:
 - **Play:** speak it now.
 - **Approve / Deny** (or **Approve plan / Keep planning**): answers the waiting prompt directly.
-- **Dismiss:** closes the notification. The message stays on **⌃⌥P** for 30 minutes.
+- **Dismiss:** removes it. Messages stay for 30 minutes; **⌃⌥P** plays them all.
+
+To also get a macOS notification with buttons, set `"ui": {"held": "notification"}` in
+`~/.config/claude-voice-kit/config.json`.
 
 Anything you ask for yourself (⌃⌥F, ⌃⌥K, replay, replies to voice commands) always plays.
 
@@ -127,6 +146,7 @@ Code asks you to confirm "local development" at each launch.
 | Command | Purpose |
 |---|---|
 | `voicekit doctor` · `status` · `paths` · `install` · `uninstall` | check, inspect, install, remove |
+| `voicekit keys` · `keys set <action> <keys>` · `keys off <action>` · `keys reset` | list or change keyboard shortcuts |
 | `voicectl "<command>"` · `voicectl agents` · `voicectl handsfree on\|off` | voice commands from the keyboard |
 | `cvoice on\|off\|full\|replay\|stop\|alerts` | Claude voice controls |
 | `kokoro "text"` · `-f file.md` · `--voices` · `--set-voice` · `--set-speed` · `--held` · `--audio-check` | text-to-speech |
@@ -144,9 +164,13 @@ Code asks you to confirm "local development" at each launch.
 - **HUD:** a small dark pop-up near the bottom of the screen. Its colour shows the state: red = listening,
   amber = working, green = done, orange = problem, blue = info. It floats above every app, clicks pass
   through it, and it fades away by itself.
-- **Menu bar icon:** a microphone (crossed out when Claude's voice is off), a dot when hands-free is on, and the
-  number of held messages. Click it for voice on/off, hands-free, play held messages, replay, stop, and the
-  shortcut list.
+- **Menu bar icon:** sound bars (crossed out when Claude's voice is off), a dot when hands-free is on, and the
+  number of held messages. Click it for voice on/off, hands-free, each held message (Play, Approve / Deny, Dismiss),
+  replay, stop, **Voice** (pick any Kokoro voice; you hear a short sample), **Speed**, and **Keyboard shortcuts**
+  (choose one to change it).
+- **MacBook notch:** macOS hides menu bar icons that don't fit beside the notch, leftmost first. The first time, the kit
+  places its icon directly left of the system icons (battery, Wi-Fi, Control Centre, clock), and hides Hammerspoon's own icon to save space
+  (`"ui": {"hammerspoon_icon": true}` shows it again). To move the icon, hold ⌘ and drag it; your position is kept.
 - To turn either off, set `"ui": {"hud": false}` (back to Hammerspoon's plain alert box) or
   `"ui": {"menubar": false}` in `~/.config/claude-voice-kit/config.json`, then reload Hammerspoon.
 

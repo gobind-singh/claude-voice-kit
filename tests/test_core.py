@@ -143,6 +143,54 @@ class EchoGuard(unittest.TestCase):
         self.assertEqual(listend.handle_phrase("Stop.")[0], "barge_in")
 
 
+class Shortcuts(unittest.TestCase):
+    def setUp(self):
+        import shortcuts, voicekit_common as vk
+        self.sc, self.vk = shortcuts, vk
+        if os.path.exists(vk.CONFIG_FILE):
+            os.remove(vk.CONFIG_FILE)
+
+    def test_parse_spellings(self):
+        n = self.sc.normalize
+        self.assertEqual(n("Control+Option+v"), "ctrl+alt+V")
+        self.assertEqual(n("⌃⌥space"), "ctrl+alt+space")
+        self.assertEqual(n("cmd+shift+f1"), "shift+cmd+F1")
+        self.assertEqual(n("F5"), "F5")
+        self.assertEqual(self.sc.pretty("ctrl+alt+V"), "⌃⌥V")
+
+    def test_rejects_unsafe_or_unknown(self):
+        for bad in ("v", "shift+a", "ctrl+alt+foo", "ctrl+alt", ""):
+            with self.assertRaises(self.sc.ShortcutError, msg=bad):
+                self.sc.normalize(bad)
+        with self.assertRaises(self.sc.ShortcutError):
+            self.sc.check_change("read_full", "cmd+Q")                 # macOS / app shortcut
+        with self.assertRaises(self.sc.ShortcutError):
+            self.sc.check_change("read_full", "ctrl+alt+V")            # already "voice on/off"
+
+    def test_save_off_and_reset(self):
+        self.sc.save("read_full", "ctrl+alt+L")
+        self.sc.save("read_selection", None)
+        eff = self.sc.effective()
+        self.assertEqual(eff["read_full"], "ctrl+alt+L")
+        self.assertIsNone(eff["read_selection"])
+        self.assertEqual(eff["replay"], "ctrl+alt+R")
+        self.sc.reset("read_full")
+        self.assertEqual(self.sc.effective()["read_full"], "ctrl+alt+F")
+        self.sc.reset()
+        self.assertEqual(self.sc.effective(), {a: self.sc.normalize(d) for a, d in self.sc.DEFAULTS.items()})
+
+    def test_invalid_config_falls_back_to_default(self):
+        self.assertEqual(self.sc.effective({"shortcuts": {"stop": "nonsense"}})["stop"], "ctrl+alt+S")
+
+    def test_save_keeps_other_settings(self):
+        self.vk.save_config({"alerts": {"idle": True}})
+        self.sc.save("stop", "ctrl+alt+X")
+        with open(self.vk.CONFIG_FILE) as f:
+            cfg = json.load(f)
+        self.assertEqual(cfg["alerts"], {"idle": True})
+        self.assertEqual(cfg["shortcuts"], {"stop": "ctrl+alt+X"})
+
+
 class Installer(unittest.TestCase):
     """Regression: hooks from a copy in another folder must be recognised, replaced and removed, and a
     missing hook script must never block Claude Code (exit code 2 = block)."""
