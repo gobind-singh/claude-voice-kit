@@ -56,6 +56,19 @@ the delay or the tick, set `push_to_talk` in `~/.config/claude-voice-kit/config.
 ```
 `key` can be `right_cmd`, `right_option`, `right_shift` or `right_ctrl`. `cue_sound` is any macOS sound name, or `""` for none.
 
+### Change your shortcuts
+Every ⌃⌥ shortcut above can be changed or turned off. Three ways:
+- **Menu bar icon → Keyboard shortcuts:** choose one, then press the new keys. **Esc** cancels; **Delete** turns it off.
+- **Terminal:** `voicekit keys` lists them. `voicekit keys set read_full cmd+shift+F` changes one,
+  `voicekit keys off read_selection` turns one off, and `voicekit keys reset` restores the defaults.
+- **Config file:** `"shortcuts": {"read_full": "cmd+shift+F", "read_selection": null}` in
+  `~/.config/claude-voice-kit/config.json`.
+
+Write keys as modifiers plus one key: `ctrl` (⌃), `alt`/`option` (⌥), `shift` (⇧), `cmd` (⌘), then a letter, digit,
+F1–F20, `space`, `return`, an arrow or punctuation. Shortcuts macOS or most apps already use (⌘Q, ⌘C, ⌘Space, …) and
+keys already used by another kit action are refused with a message. `voicekit doctor` warns if a shortcut couldn't be
+registered because another app holds it.
+
 ## Voice commands
 Hold **Right ⌘**, or say **"hey Claude, …"** in hands-free mode.
 
@@ -130,6 +143,7 @@ Code asks you to confirm "local development" at each launch.
 | Command | Purpose |
 |---|---|
 | `voicekit doctor` · `status` · `paths` · `install` · `uninstall` | check, inspect, install, remove |
+| `voicekit keys` · `keys set <action> <keys>` · `keys off <action>` · `keys reset` | list or change keyboard shortcuts |
 | `voicectl "<command>"` · `voicectl agents` · `voicectl handsfree on\|off` | voice commands from the keyboard |
 | `cvoice on\|off\|full\|replay\|stop\|alerts` | Claude voice controls |
 | `kokoro "text"` · `-f file.md` · `--voices` · `--set-voice` · `--set-speed` · `--held` · `--audio-check` | text-to-speech |
@@ -149,7 +163,8 @@ Code asks you to confirm "local development" at each launch.
   through it, and it fades away by itself.
 - **Menu bar icon:** sound bars (crossed out when Claude's voice is off), a dot when hands-free is on, and the
   number of held messages. Click it for voice on/off, hands-free, each held message (Play, Approve / Deny, Dismiss),
-  replay, stop, and the shortcut list.
+  replay, stop, **Voice** (pick any Kokoro voice; you hear a short sample), **Speed**, and **Keyboard shortcuts**
+  (choose one to change it).
 - To turn either off, set `"ui": {"hud": false}` (back to Hammerspoon's plain alert box) or
   `"ui": {"menubar": false}` in `~/.config/claude-voice-kit/config.json`, then reload Hammerspoon.
 

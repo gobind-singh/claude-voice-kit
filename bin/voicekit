@@ -6,6 +6,10 @@
   voicekit doctor                   check every part and say exactly what to fix
   voicekit status                   short summary
   voicekit paths                    where everything lives
+  voicekit keys                     list keyboard shortcuts
+  voicekit keys set <action> <keys> change one, e.g. voicekit keys set read_full cmd+shift+F
+  voicekit keys off <action>        turn one off
+  voicekit keys reset [<action>]    back to the default (all, or one)
 """
 import json, os, platform, plistlib, shutil, subprocess, sys, time
 
@@ -512,6 +516,10 @@ def doctor(args, quiet=False):
         results.append(check(f"hotkeys active ({n or 0})", n not in ("", "0"), "open Hammerspoon, then Reload Config"))
         hud = hs_query("return voiceKit and voiceKit.hud and 'yes' or 'no'", retries=5)
         results.append(check("on-screen HUD loaded", hud == "yes", "open Hammerspoon, then Reload Config"))
+        bad = hs_query("return voiceKit and (#(voiceKit.shortcutProblems or {}) == 0 and 'none' or "
+                       "table.concat(voiceKit.shortcutProblems, ', ')) or 'none'", retries=3)
+        results.append(check("all keyboard shortcuts registered", bad in ("none", ""),
+                             f"couldn't register {bad}: another app may use it. Change it with `voicekit keys set`"))
     else:
         check("Hammerspoon (optional, for hotkeys)", False, "voicekit install  (installs it with Homebrew)")
     return all(results)
@@ -531,8 +539,48 @@ def paths(args):
         print(f"  {k:18} {v}")
 
 
+def reload_hotkeys():
+    """Tell Hammerspoon to re-read the shortcuts (no-op if it isn't running)."""
+    try:
+        subprocess.run(["hs", "-c", "if voiceKit and voiceKit.reloadShortcuts then voiceKit.reloadShortcuts() end"],
+                       capture_output=True, timeout=5)
+    except Exception:
+        pass
+
+
+def keys(args):
+    import shortcuts as sc
+    if args[:1] == ["--json"]:
+        return print(json.dumps(sc.as_list()))
+    try:
+        if not args or args[0] == "list":
+            pass
+        elif args[0] == "set" and len(args) >= 3:
+            v = sc.save(args[1], " ".join(args[2:]))
+            print(f"✓ {sc.LABELS[args[1]]}: {sc.pretty(v)}")
+            reload_hotkeys()
+        elif args[0] == "off" and len(args) == 2:
+            sc.save(args[1], None)
+            print(f"✓ {sc.LABELS[args[1]]}: off")
+            reload_hotkeys()
+        elif args[0] == "reset":
+            sc.reset(args[1] if len(args) > 1 else None)
+            print("✓ reset to default" + ("" if len(args) > 1 else "s"))
+            reload_hotkeys()
+        else:
+            sys.exit("usage: voicekit keys [list | set <action> <keys> | off <action> | reset [<action>]]")
+    except sc.ShortcutError as e:
+        sys.exit(f"✗ {e}")
+    print("Keyboard shortcuts (change with: voicekit keys set <action> <keys>, or from the menu bar icon)")
+    for k in sc.as_list():
+        print(f"  {k['pretty']:10} {k['id']:15} {k['label']}" + ("   (changed)" if k["changed"] else ""))
+    ptt = vk.load_config().get("push_to_talk", {})
+    print(f"  {'hold ' + ptt.get('key', 'right_cmd'):25} speak a voice command   (push_to_talk in config.json)")
+
+
 def main():
-    cmds = {"install": install, "uninstall": uninstall, "doctor": doctor, "status": status, "paths": paths}
+    cmds = {"install": install, "uninstall": uninstall, "doctor": doctor, "status": status, "paths": paths,
+            "keys": keys}
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         print(__doc__)
         sys.exit(1)

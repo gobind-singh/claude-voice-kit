@@ -22,7 +22,7 @@ require("hs.ipc")  -- lets the `hs` command talk to Hammerspoon (used by `voicek
 if voiceKit then
   local old = voiceKit
   for _, h in ipairs(old.hotkeys or {}) do pcall(function() h:delete() end) end
-  for _, k in ipairs({ "pttWatcher", "fnWatcher" }) do pcall(function() old[k]:stop() end) end
+  for _, k in ipairs({ "pttWatcher", "fnWatcher", "recorder" }) do pcall(function() old[k]:stop() end) end
   if old.armTimer then pcall(function() old.armTimer:stop() end) end
   if old.hud then pcall(old.hud.destroy) end
   if old.menu then pcall(old.menu.stop) end
@@ -89,23 +89,32 @@ function VK.nextSection() kokoro({ "--next" }) end
 function VK.replay() kokoro({ "--replay" }) end
 function VK.stopSpeaking() kokoro({ "--stop" }) end
 function VK.playHeld() kokoro({ "--play-held" }) end
+VK.run = run
+-- Voice and speed, chosen from the menu bar: saved as kokoro's defaults, with a short sample.
+function VK.setVoice(voice, name)
+  run(VK.kokoro, { "--set-voice", voice }, function(code)
+    if code ~= 0 then return HUD.show("error", "Couldn't change the voice", voice, 3) end
+    HUD.show("ok", "Voice: " .. name, nil, 2, { icon = "speaker" })
+    kokoro({ "-i", "--voice", voice, "--", "Hi, I'm " .. name .. ". This is how Claude will sound." })
+    if VK.menu then VK.menu.refresh() end
+  end)
+end
+function VK.setSpeed(speed)
+  run(VK.kokoro, { "--set-speed", tostring(speed) }, function(code)
+    if code ~= 0 then return HUD.show("error", "Couldn't change the speed", nil, 3) end
+    local label = speed == 1.0 and "Normal" or string.format("%.1f\u{00D7}", speed)
+    HUD.show("ok", "Speed: " .. label, nil, 2, { icon = "speaker" })
+    kokoro({ "-i", "--speed", tostring(speed), "--", "This is the new speed." })
+  end)
+end
 
-local mods = { "ctrl", "alt" }  -- "alt" = Option (⌥)
-VK.hotkeys = {}
-local function bind(key, fn) table.insert(VK.hotkeys, hs.hotkey.bind(mods, key, fn)) end
-
-bind("V", VK.toggleVoice)
-bind("F", VK.readFull)
-bind("N", VK.nextSection)
-bind("R", VK.replay)
-bind("S", VK.stopSpeaking)
-bind("K", function()
+function VK.readSelection()
   local saved = hs.pasteboard.getContents()
   local before = hs.pasteboard.changeCount()
   hs.eventtap.keyStroke({ "cmd" }, "c")
   hs.timer.doAfter(0.25, function()
     if hs.pasteboard.changeCount() == before then
-      HUD.show("error", "No text selected", "Select some text, then press \u{2303}\u{2325}K", 2.5)
+      HUD.show("error", "No text selected", "Select some text, then press " .. VK.keyLabel("read_selection"), 2.5)
       return
     end
     local text = hs.pasteboard.getContents()
@@ -115,7 +124,7 @@ bind("K", function()
       kokoro({ "-i", "--", text })
     end
   end)
-end)
+end
 
 -- Hold Right Command (⌘) to speak a voice command; release to transcribe it.
 -- Listening starts only after the key has been held ALONE for hold_ms (default 0.3 s), with a soft
@@ -160,8 +169,6 @@ VK.onCommand = function(text)
   end)
 end
 
--- Control+Option+H (⌃⌥H): hands-free mode on/off (voice approvals + "hey Claude" wake phrase)
-bind("H", VK.toggleHandsfree)
 -- Hands-free survives restarts: turn the wake phrase back on if it was on.
 if hs.fs.attributes(os.getenv("HOME") .. "/.local/state/claude-voice-kit/handsfree") then
   run(VK.listen, { "--wake", "on" })
@@ -266,14 +273,107 @@ function VK.notifyHeld(b64)
   if ui.held == "notification" then notifyHeldSystem(item) end
   local count = VK.menu and VK.menu.state().held or 1
   local title = count > 1 and (count .. " messages held") or "Message held"
-  local hint = (item.actions and #item.actions > 0) and "Answer from the menu bar icon" or "\u{2303}\u{2325}P to play"
+  local hint = (item.actions and #item.actions > 0) and "Answer from the menu bar icon" or (VK.keyLabel("play_held") .. " to play")
   local why = (item.why and #item.why > 0) and item.why or "Other audio was playing"
   HUD.show("info", title, why .. " \u{00B7} " .. hint, 3, { icon = "message" })
   refreshMenu()
 end
 
--- Control+Option+P (⌃⌥P): play all held messages
-bind("P", VK.playHeld)
+-- Keyboard shortcuts. The list (actions, defaults, the user's changes) lives in claude/shortcuts.py and
+-- ~/.config/claude-voice-kit/config.json ("shortcuts"); `voicekit keys` and the menu bar change it.
+VK.actions = {
+  voice_toggle = VK.toggleVoice, read_full = VK.readFull, next_section = VK.nextSection, replay = VK.replay,
+  stop = VK.stopSpeaking, read_selection = VK.readSelection, handsfree = VK.toggleHandsfree, play_held = VK.playHeld,
+}
+local FALLBACK_SHORTCUTS = {   -- used only if the shortcut list can't be read
+  { id = "voice_toggle", combo = "ctrl+alt+V" }, { id = "read_full", combo = "ctrl+alt+F" },
+  { id = "next_section", combo = "ctrl+alt+N" }, { id = "replay", combo = "ctrl+alt+R" },
+  { id = "stop", combo = "ctrl+alt+S" }, { id = "read_selection", combo = "ctrl+alt+K" },
+  { id = "handsfree", combo = "ctrl+alt+H" }, { id = "play_held", combo = "ctrl+alt+P" },
+}
+local KEYNAMES = { space = "space", ["return"] = "return", tab = "tab", escape = "escape", delete = "delete",
+  forwarddelete = "forwarddelete", home = "home", ["end"] = "end", pageup = "pageup", pagedown = "pagedown",
+  left = "left", right = "right", up = "up", down = "down" }
+local function splitCombo(combo)
+  local mods, key = {}, nil
+  for part in combo:gmatch("[^+]+") do
+    if part == "ctrl" or part == "alt" or part == "shift" or part == "cmd" then table.insert(mods, part)
+    else key = part end
+  end
+  if key and #key == 1 then key = key:lower()
+  elseif key and key:match("^F%d+$") then key = key:lower()
+  elseif key then key = KEYNAMES[key] or key end
+  return mods, key
+end
+function VK.loadShortcuts()
+  local out, ok = hs.execute(string.format('"%s" "%s/claude/shortcuts.py" --json', VK.python, VK.dir))
+  local list = ok and hs.json.decode(out or "") or nil
+  VK.shortcuts = type(list) == "table" and list or FALLBACK_SHORTCUTS
+  return VK.shortcuts
+end
+function VK.keyLabel(id)
+  for _, s in ipairs(VK.shortcuts or {}) do if s.id == id then return s.pretty or s.combo or "off" end end
+  return "off"
+end
+function VK.bindShortcuts()
+  for _, h in ipairs(VK.hotkeys or {}) do pcall(function() h:delete() end) end
+  VK.hotkeys, VK.shortcutProblems = {}, {}
+  for _, s in ipairs(VK.shortcuts or {}) do
+    local fn = VK.actions[s.id]
+    if fn and s.combo and s.combo ~= hs.json.null then
+      local mods, key = splitCombo(s.combo)
+      local ok, hk = pcall(hs.hotkey.bind, mods, key, fn)
+      if ok and hk then table.insert(VK.hotkeys, hk)
+      else table.insert(VK.shortcutProblems, (s.pretty or s.combo) .. " (" .. (s.label or s.id) .. ")") end
+    end
+  end
+end
+function VK.reloadShortcuts()
+  VK.loadShortcuts()
+  VK.bindShortcuts()
+  if VK.menu then VK.menu.refresh() end
+end
+VK.reloadShortcuts()
+
+-- Change a shortcut by pressing it: the HUD asks, the next key press is captured (Esc cancels,
+-- Delete turns the shortcut off), and `voicekit keys` checks and saves it.
+local CAPTURE_KEYS = { [hs.keycodes.map["escape"]] = "escape", [hs.keycodes.map["delete"]] = "delete" }
+function VK.recordShortcut(id, label)
+  if VK.recorder then VK.recorder:stop() end
+  for _, h in ipairs(VK.hotkeys) do h:disable() end        -- so pressing a current shortcut doesn't run it
+  local function finish()
+    if VK.recorder then VK.recorder:stop(); VK.recorder = nil end
+    if VK.recordTimeout then VK.recordTimeout:stop(); VK.recordTimeout = nil end
+    for _, h in ipairs(VK.hotkeys) do h:enable() end
+  end
+  local function apply(args, okMsg)
+    run(VK.dir .. "/bin/voicekit", args, function(code, out)
+      VK.reloadShortcuts()
+      local line = (out or ""):match("[^\n]+") or ""
+      if code == 0 then HUD.show("ok", okMsg, label, 3, { icon = "keyboard" })
+      else HUD.show("error", "Not changed", (line:gsub("^✗%s*", "")), 4, { icon = "keyboard" }) end
+    end)
+  end
+  HUD.show("info", "Press the new shortcut", label .. " \u{00B7} Esc cancels \u{00B7} Delete turns it off", 10,
+           { icon = "keyboard" })
+  VK.recorder = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(e)
+    local f, code = e:getFlags(), e:getKeyCode()
+    local special = CAPTURE_KEYS[code]
+    local hasMod = f.cmd or f.alt or f.ctrl
+    if special == "escape" and not hasMod then finish(); HUD.show("muted", "Shortcut unchanged", label, 2); return true end
+    if special == "delete" and not hasMod then finish(); apply({ "keys", "off", id }, "Shortcut turned off"); return true end
+    local key = hs.keycodes.map[code]
+    if not key then return true end
+    local parts = {}
+    for _, m in ipairs({ "ctrl", "alt", "shift", "cmd" }) do if f[m] then table.insert(parts, m) end end
+    table.insert(parts, key)
+    finish()
+    local combo = table.concat(parts, "+")
+    apply({ "keys", "set", id, combo }, "Shortcut changed")
+    return true
+  end):start()
+  VK.recordTimeout = hs.timer.doAfter(10, function() finish(); HUD.hide(0.2) end)
+end
 
 -- fn pressed alone (the usual dictation key, e.g. Handy or macOS Dictation): stop speech.
 VK.fnWatcher = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, function(e)

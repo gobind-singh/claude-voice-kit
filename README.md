@@ -101,7 +101,8 @@ Then ask Claude anything and listen for the briefing, or hold **Right ⌘** and 
 | ⌃⌥ **P** | play messages held during other audio |
 | ⌃⌥ **K** | read the selected text in any app |
 
-⌃ = Control, ⌥ = Option, ⌘ = Command. Every voice command, setting and troubleshooting tip is in **[docs/usage.md](docs/usage.md)**.
+⌃ = Control, ⌥ = Option, ⌘ = Command. Change any shortcut, the voice or the speed from the menu bar icon (or
+`voicekit keys`). Every voice command, setting and troubleshooting tip is in **[docs/usage.md](docs/usage.md)**.
 
 ## Safe by design
 - **No new approvals:** voice only answers prompts Claude Code already shows. Risky commands (`rm`, `git push`, `sudo`,
