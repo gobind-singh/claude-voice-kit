@@ -11,10 +11,22 @@
 --   Control+Option+K (⌃⌥K)  read the selected text in any app aloud
 --   Control+Option+H (⌃⌥H)  hands-free mode on/off (voice approvals + "hey Claude" wake phrase)
 --   Control+Option+P (⌃⌥P)  play messages held back while other audio was playing
---   Right Command (hold)    after 0.3 s alone: speak a voice command; release to run it (strip shows "Heard: … → result")
+--   Right Command (hold)    after 0.3 s alone: speak a voice command; release to run it (the HUD shows the result and what was heard)
 --   fn                      stops speech (the usual dictation key, so dictating interrupts it)
+--
+-- On screen: hud.lua draws the pop-up (HUD), menubar.lua the menu bar icon, icons.lua the icons.
 
 require("hs.ipc")  -- lets the `hs` command talk to Hammerspoon (used by `voicekit doctor`)
+
+-- Loading this file again (without a full Hammerspoon reload) replaces the previous copy cleanly.
+if voiceKit then
+  local old = voiceKit
+  for _, h in ipairs(old.hotkeys or {}) do pcall(function() h:delete() end) end
+  for _, k in ipairs({ "pttWatcher", "fnWatcher" }) do pcall(function() old[k]:stop() end) end
+  if old.armTimer then pcall(function() old.armTimer:stop() end) end
+  if old.hud then pcall(old.hud.destroy) end
+  if old.menu then pcall(old.menu.stop) end
+end
 
 local VK = {}
 local here = debug.getinfo(1, "S").source:sub(2)
@@ -40,36 +52,68 @@ end
 local function kokoro(args) run(VK.kokoro, args) end
 local function cvoice(args, onDone) run(VK.cvoice, args, onDone) end
 
+-- UI settings: "ui" in ~/.config/claude-voice-kit/config.json, e.g. {"ui": {"hud": true, "menubar": true}}.
+-- "hud": false brings back Hammerspoon's plain alert box; "menubar": false hides the menu bar icon.
+local configDir = os.getenv("VOICEKIT_CONFIG_DIR") or (os.getenv("HOME") .. "/.config/claude-voice-kit")
+local ui = (hs.fs.attributes(configDir .. "/config.json") and (hs.json.read(configDir .. "/config.json") or {}).ui) or {}
+local Icons = dofile(VK.dir .. "/hammerspoon/icons.lua")
+VK.hud = dofile(VK.dir .. "/hammerspoon/hud.lua")(Icons)
+VK.hud.useAlert = ui.hud == false
+local HUD = VK.hud
+local function refreshMenu() if VK.menu then VK.menu.refresh() end end
+
+-- Actions shared by the hotkeys and the menu bar menu.
+function VK.toggleVoice()
+  cvoice({ "toggle" }, function(_, out)
+    if out and out:find(": on", 1, true) then
+      HUD.show("info", "Claude voice on", nil, 2, { icon = "speaker" })
+      kokoro({ "-i", "--", "Claude voice on." })
+    else
+      HUD.show("muted", "Claude voice off", nil, 2)
+    end
+    refreshMenu()
+  end)
+end
+function VK.toggleHandsfree()
+  run(VK.voicectl, { "handsfree", "toggle" }, function(_, out)
+    if (out or ""):find("Hands%-free on") then
+      HUD.show("info", "Hands-free on", "Approvals are asked out loud · say \u{201C}hey Claude\u{201D}", 3, { icon = "headphones" })
+    else
+      HUD.show("muted", "Hands-free off", nil, 2, { icon = "headphones" })
+    end
+    refreshMenu()
+  end)
+end
+function VK.readFull() cvoice({ "full", "--toggle" }) end
+function VK.nextSection() kokoro({ "--next" }) end
+function VK.replay() kokoro({ "--replay" }) end
+function VK.stopSpeaking() kokoro({ "--stop" }) end
+function VK.playHeld() kokoro({ "--play-held" }) end
+
 local mods = { "ctrl", "alt" }  -- "alt" = Option (⌥)
 VK.hotkeys = {}
 local function bind(key, fn) table.insert(VK.hotkeys, hs.hotkey.bind(mods, key, fn)) end
 
-bind("V", function()
-  cvoice({ "toggle" }, function(_, out)
-    if out and out:find(": on", 1, true) then
-      hs.alert.show("🔊 Claude voice ON")
-      kokoro({ "-i", "--", "Claude voice on." })
-    else
-      hs.alert.show("🔇 Claude voice OFF")
-    end
-  end)
-end)
-bind("F", function() cvoice({ "full", "--toggle" }) end)
-bind("N", function() kokoro({ "--next" }) end)
-bind("R", function() kokoro({ "--replay" }) end)
-bind("S", function() kokoro({ "--stop" }) end)
+bind("V", VK.toggleVoice)
+bind("F", VK.readFull)
+bind("N", VK.nextSection)
+bind("R", VK.replay)
+bind("S", VK.stopSpeaking)
 bind("K", function()
   local saved = hs.pasteboard.getContents()
   local before = hs.pasteboard.changeCount()
   hs.eventtap.keyStroke({ "cmd" }, "c")
   hs.timer.doAfter(0.25, function()
     if hs.pasteboard.changeCount() == before then
-      hs.alert.show("Voice kit: no text selected")
+      HUD.show("error", "No text selected", "Select some text, then press \u{2303}\u{2325}K", 2.5)
       return
     end
     local text = hs.pasteboard.getContents()
     if saved then hs.pasteboard.setContents(saved) end
-    if text and #text > 0 then kokoro({ "-i", "--", text }) end
+    if text and #text > 0 then
+      HUD.show("info", "Reading selection aloud", nil, 1.5, { icon = "speaker" })
+      kokoro({ "-i", "--", text })
+    end
   end)
 end)
 
@@ -96,29 +140,28 @@ local function pttSettings()
 end
 VK.ptt = pttSettings()
 local PTT_KEY, PTT_FLAG = PTT_KEYS[VK.ptt.key][1], PTT_KEYS[VK.ptt.key][2]
+local PTT_LABEL = ({ right_cmd = "Right \u{2318}", right_option = "Right \u{2325}", right_shift = "Right \u{21E7}",
+                     right_ctrl = "Right \u{2303}" })[VK.ptt.key]
 local OTHER_FLAGS = { "cmd", "alt", "ctrl", "shift", "fn" }
 VK.recording = false
 VK.armTimer = nil              -- running while the key is held but listening hasn't started yet
-local function stripMessage(msg, secs)
-  hs.alert.closeAll(0)
-  hs.alert.show(msg, { atScreenEdge = 2, textSize = 18 }, secs or 30)
-end
--- On-screen strip: what was heard, then what happened ("Heard: approve → Approved.").
+-- On-screen HUD: what was heard, then what happened (title = result, detail = what was heard).
+local function quoted(text) return "\u{201C}" .. text .. "\u{201D}" end
 VK.onCommand = function(text)
-  stripMessage("Heard: " .. text .. "  …", 30)
+  HUD.show("transcribing", quoted(text), "Working on it\u{2026}", 30)
   run(VK.voicectl, { text }, function(code, out)
     local result = (out or ""):gsub("%s+$", "")
-    local mark = code == 0 and "✓" or "⚠️"
-    stripMessage("Heard: " .. text .. (#result > 0 and ("  →  " .. result) or "") .. "  " .. mark, 5)
+    if #result > 0 then
+      HUD.show(code == 0 and "ok" or "error", result, "Heard " .. quoted(text), 5)
+    else
+      HUD.show(code == 0 and "ok" or "error", code == 0 and "Done" or "That didn't work", "Heard " .. quoted(text), 4)
+    end
+    refreshMenu()
   end)
 end
 
 -- Control+Option+H (⌃⌥H): hands-free mode on/off (voice approvals + "hey Claude" wake phrase)
-bind("H", function()
-  run(VK.voicectl, { "handsfree", "toggle" }, function(_, out)
-    stripMessage(((out or ""):find("on") and "🎧 " or "🔕 ") .. (out or ""):gsub("%s+$", ""), 3)
-  end)
-end)
+bind("H", VK.toggleHandsfree)
 -- Hands-free survives restarts: turn the wake phrase back on if it was on.
 if hs.fs.attributes(os.getenv("HOME") .. "/.local/state/claude-voice-kit/handsfree") then
   run(VK.listen, { "--wake", "on" })
@@ -135,7 +178,7 @@ local function startListening()
     local cue = hs.sound.getByName(VK.ptt.cue_sound)
     if cue then cue:volume(0.4):play() end
   end
-  stripMessage("🎙️ Listening…  (release the key when done)")
+  HUD.show("listening", "Listening\u{2026}", "Release " .. PTT_LABEL .. " when done", 30)
 end
 local function onlyPttHeld(f)
   if not f[PTT_FLAG] then return false end
@@ -151,7 +194,7 @@ VK.pttWatcher = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged, hs.event
     if VK.recording then                                 -- key used as a modifier while recording: cancel
       VK.recording = false
       run(VK.listen, { "--cancel" })
-      hs.alert.closeAll(0)
+      HUD.hide(0.1)
     end
     return false
   end
@@ -167,12 +210,11 @@ VK.pttWatcher = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged, hs.event
     disarm()
   elseif not f[PTT_FLAG] and VK.recording then
     VK.recording = false
-    stripMessage("… transcribing", 5)
+    HUD.show("transcribing", "Transcribing\u{2026}", nil, 15)
     run(VK.listen, { "--stop" }, function(code, out)
-      hs.alert.closeAll(0)
       local text = (out or ""):gsub("^%s+", ""):gsub("%s+$", "")
       if code == 0 and #text > 0 then VK.onCommand(text)
-      else hs.alert.show("Didn't catch that", { atScreenEdge = 2 }, 1.5) end
+      else HUD.show("error", "Didn't catch that", "Hold " .. PTT_LABEL .. ", wait for the tick, then speak", 2.5) end
     end)
   end
   return false
@@ -218,11 +260,13 @@ function VK.notifyHeld(b64)
   end
   n:send()
   VK.lastHeldNote = n
-  stripMessage("🔇 Held a message (" .. (item.why or "other audio") .. "). ⌃⌥P to play", 4)
+  local why = (item.why and #item.why > 0) and item.why or "Other audio was playing"
+  HUD.show("info", "Message held", why .. " \u{00B7} \u{2303}\u{2325}P to play", 4, { icon = "message" })
+  refreshMenu()
 end
 
 -- Control+Option+P (⌃⌥P): play all held messages
-bind("P", function() kokoro({ "--play-held" }) end)
+bind("P", VK.playHeld)
 
 -- fn pressed alone (the usual dictation key, e.g. Handy or macOS Dictation): stop speech.
 VK.fnWatcher = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, function(e)
@@ -232,5 +276,10 @@ VK.fnWatcher = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, functio
 end)
 VK.fnWatcher:start()
 
+-- Menu bar icon: voice on/off, hands-free, held messages, and the same actions as the hotkeys.
+if ui.menubar ~= false then
+  VK.menu = dofile(VK.dir .. "/hammerspoon/menubar.lua")(VK, Icons).start()
+end
+
 voiceKit = VK  -- global, so watchers aren't garbage-collected and doctor can inspect
-hs.alert.show("Claude voice kit loaded")
+HUD.show("ok", "Claude voice kit ready", nil, 1.5, { icon = "mic" })

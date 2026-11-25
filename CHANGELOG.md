@@ -7,6 +7,10 @@
 - Right ⌘ push-to-talk starts listening only after the key is held alone for 0.3 s (with a soft tick), so shortcuts
   like Right ⌘ + Delete no longer stop speech or open the microphone. Key, delay and tick are configurable
   (`push_to_talk`).
+- New on-screen HUD replaces Hammerspoon's plain alert box: our own line icons, a colour for each state
+  (listening, transcribing, done, problem), animated listening bars and spinner, fades in and out.
+- New menu bar icon: voice on/off, hands-free, held-message count, and a menu with the hotkey actions.
+- No emoji in on-screen messages. `"ui": {"hud": false, "menubar": false}` in config.json turns either off.
 - Licence changed to MIT.
 
 ## 0.1.0: first release

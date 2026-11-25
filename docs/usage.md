@@ -37,7 +37,7 @@ One-time steps after `✅ Installed.`:
 ## Hotkeys
 | Key | Does |
 |---|---|
-| **Right ⌘ (hold)** | after a soft tick (0.3 s), speak a voice command; release to run it. A strip at the bottom of the screen shows "Heard: … → result" |
+| **Right ⌘ (hold)** | after a soft tick (0.3 s), speak a voice command; release to run it. A pop-up (HUD) at the bottom of the screen shows listening → transcribing → the result and what was heard |
 | ⌃⌥H | hands-free mode on/off |
 | ⌃⌥V | Claude's voice on/off (mute) |
 | ⌃⌥F | read the whole last reply or plan (press again to stop) |
@@ -136,9 +136,19 @@ Code asks you to confirm "local development" at each launch.
 ## Settings
 | File | What you can change |
 |---|---|
-| `~/.config/claude-voice-kit/config.json` | push-to-talk key and delay, which alerts are spoken, summary model, approval timeout, risky patterns, confirmations, per-agent voices (`agent_voices`), AI router, wake words |
+| `~/.config/claude-voice-kit/config.json` | push-to-talk key and delay, which alerts are spoken, summary model, approval timeout, risky patterns, confirmations, per-agent voices (`agent_voices`), AI router, wake words, on-screen UI (`ui`: `hud`, `menubar`) |
 | `~/.config/kokoro-voice/config.json` | voice, speed, idle timers, behaviour when other audio is playing, ignored apps |
 | `~/.config/listen-voice/config.json` | speech model, microphone, vocabulary and corrections ("harder" → "herdr"), wake phrases |
+
+### On screen
+- **HUD:** a small dark pop-up near the bottom of the screen. Its colour shows the state: red = listening,
+  amber = working, green = done, orange = problem, blue = info. It floats above every app, clicks pass
+  through it, and it fades away by itself.
+- **Menu bar icon:** a microphone (crossed out when Claude's voice is off), a dot when hands-free is on, and the
+  number of held messages. Click it for voice on/off, hands-free, play held messages, replay, stop, and the
+  shortcut list.
+- To turn either off, set `"ui": {"hud": false}` (back to Hammerspoon's plain alert box) or
+  `"ui": {"menubar": false}` in `~/.config/claude-voice-kit/config.json`, then reload Hammerspoon.
 
 `voicekit paths` lists every file the kit uses. Settings live outside the project folder, so updating never touches them.
 

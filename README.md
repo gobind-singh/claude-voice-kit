@@ -39,7 +39,7 @@ flowchart LR
     end
 
     subgraph Mac["Your Mac (local)"]
-        HS["Hammerspoon<br/>hotkeys · push-to-talk<br/>on-screen strip"]
+        HS["Hammerspoon<br/>hotkeys · push-to-talk<br/>on-screen HUD · menu bar"]
         LV["listen-voice<br/>Parakeet speech-to-text<br/>+ text polish"]
         VC["voicectl<br/>command router"]
         KV["kokoro-voice<br/>Kokoro text-to-speech<br/>queue · polite mode"]
@@ -126,7 +126,7 @@ bin/                        voicekit (install · doctor · status), claude-voice
 packages/kokoro-voice/      text-to-speech service + `kokoro` CLI (standalone)
 packages/listen-voice/      speech-to-text service + `listen-voice` CLI (standalone)
 claude/                     Claude Code layer: hooks, voicectl router, registry, adapters
-hammerspoon/                hotkeys, push-to-talk, notifications
+hammerspoon/                hotkeys, push-to-talk, on-screen HUD, menu bar icon, notifications
 docs/                       usage, architecture, publishing, third-party licences
 tests/ · scripts/           unit tests · privacy check
 ```
