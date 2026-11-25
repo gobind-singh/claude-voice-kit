@@ -101,6 +101,13 @@
   - Two notifications sent together race.
   - Buttons must target the session id: names can change between the question and the click.
   - macOS doesn't report "Dismiss" clicks, so dismissed messages stay on ⌃⌥P until they expire.
+  - **Open isn't audible.** A Discord tab in Safari kept `com.apple.WebKit.GPU`'s output open for days, and
+    `systemsoundserverd` keeps its channel open after alert sounds, so nearly every message was held. The
+    `audio-level` helper (Swift, Core Audio process tap, macOS 14.2+) now measures apps that only have output open
+    for 0.25 s and ignores them below -50 dBFS; if several are open and something is loud, each is measured to name
+    the right app. Lessons: the helper re-launches itself with responsibility disclaimed so macOS asks permission
+    for the helper rather than for the Python service; an ad-hoc signature changes on every build and macOS then asks
+    again, so the installer rebuilds only when the source changes.
 - **Fresh-install test found a crash for deep install folders.** espeak-ng (misaki's fallback for unknown words) can't
   read its data when that folder's path is over ~160 characters, and it resolves symlinks. `voiced.short_espeak_path()`
   copies the 19 MB data folder to `~/.local/state/kokoro-voice/` when the path is long.

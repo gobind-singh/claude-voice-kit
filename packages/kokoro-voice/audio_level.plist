@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>com.claude-voice-kit.audio-level</string>
+  <key>CFBundleName</key><string>voice-kit audio level</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>claude-voice-kit checks whether other apps are actually making sound, so it doesn't talk over them. It only measures the volume; no audio is recorded or stored.</string>
+</dict></plist>

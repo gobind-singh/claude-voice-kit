@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+- Polite mode checks whether other apps are **audibly** playing, not just whether their audio channel is open, using a
+  small `audio-level` helper (needs System Audio Recording permission). A silent browser tab (e.g. Discord in Safari)
+  or dictation app no longer holds every message. macOS's system-sound helper is ignored by default.
+- Licence changed to MIT.
+
 ## 0.1.0: first release
 - Spoken briefings for every Claude Code reply, written by Claude Haiku and spoken with a local Kokoro voice.
 - Spoken plan summaries for plan approvals, plus a full read of any reply or plan (⌃⌥F) with section skipping.

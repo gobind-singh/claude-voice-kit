@@ -36,7 +36,11 @@ DEFAULTS = {"voice": "af_heart", "speed": 1.0, "idle_unload_minutes": 10, "idle_
             "ignore_processes": [r"\bcoreaudiod\b"],   # command-line patterns that don't count as "other audio"
             # apps that keep a silent output channel open all the time: their output is ignored,
             # their microphone use still counts (so dictation isn't talked over)
-            "ignore_output_processes": [],     # e.g. [r"SomeApp"]; see `kokoro --audio-check`
+            "ignore_output_processes": [r"\bsystemsoundserverd\b"],   # e.g. [r"SomeApp"]; see `kokoro --audio-check`
+            # an app that only has output open counts only if it's louder than this (dBFS), measured for
+            # level_check_ms with the audio-level helper; null = every open channel counts
+            "audible_threshold_db": -50,
+            "level_check_ms": 250,
             "held_expire_minutes": 30,
             "notify_command": []}                  # run with one arg: base64 JSON of a held message
 HISTORY_FILE = os.path.join(STATE_DIR, "history.json")
@@ -315,13 +319,15 @@ def held_save(items):
     os.replace(tmp, HELD_FILE)
 
 
-def other_audio(cfg):
-    """Apps other than this service (and its afplay children) using audio, or [] / None."""
+def other_audio(cfg, report=None):
+    """Apps other than this service (and its afplay children) audibly using audio, or [] / None."""
     try:
         import audio_activity
         return audio_activity.other_audio_active(ignore_pids={os.getpid()},
                                                  ignore_patterns=cfg.get("ignore_processes", []),
-                                                 ignore_output_patterns=cfg.get("ignore_output_processes", []))
+                                                 ignore_output_patterns=cfg.get("ignore_output_processes", []),
+                                                 audible_db=cfg.get("audible_threshold_db", -50),
+                                                 level_ms=cfg.get("level_check_ms", 250), report=report)
     except Exception as e:
         log("audio check failed:", e)
         return None
@@ -420,8 +426,11 @@ def handle(req):
         stop_all()
         return {"ok": True}
     if cmd == "audio_check":
-        apps = other_audio(config())
-        return {"ok": True, "apps": apps, "supported": apps is not None}
+        import audio_activity
+        report = {}
+        apps = other_audio(config(), report)
+        return {"ok": True, "apps": apps, "supported": apps is not None, "silent": report.get("silent", []),
+                "level_db": report.get("level_db"), "level_check": audio_activity.level_permission()}
     if cmd == "held":
         return {"ok": True, "held": held_load()}
     if cmd in ("play_held", "drop_held"):

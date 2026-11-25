@@ -29,6 +29,7 @@ One-time steps after `✅ Installed.`:
 |---|---|
 | Allow Hammerspoon to control your keyboard | System Settings → Privacy & Security → **Accessibility** |
 | Allow Hammerspoon to use the microphone | macOS asks the first time you hold Right ⌘ |
+| Allow "System Audio Recording" for audio-level | macOS asks during install (volume check only; nothing recorded) |
 | Keep notification buttons on screen (optional) | System Settings → Notifications → Hammerspoon → **Alerts** |
 | Restart your Claude Code sessions | your terminal |
 | Check everything | `voicekit doctor` |
@@ -86,7 +87,7 @@ Toggle with **⌃⌥H** or say "hands free on".
 - Saying **"stop"** while the kit is talking interrupts it.
 
 ## When other audio is playing
-If another app is playing sound or using the microphone (music, a video, a call, dictation), automatic messages
+If another app is audibly playing sound or using the microphone (music, a video, a call, dictation), automatic messages
 (briefings, alerts, plan summaries, approval questions) are **not spoken**. A silent notification appears instead:
 - **Play:** speak it now.
 - **Approve / Deny** (or **Approve plan / Keep planning**): answers the waiting prompt directly.
@@ -94,9 +95,12 @@ If another app is playing sound or using the microphone (music, a video, a call,
 
 Anything you ask for yourself (⌃⌥F, ⌃⌥K, replay, replies to voice commands) always plays.
 
-- `kokoro --audio-check` shows which apps count as "using audio" right now.
-- Some apps keep a silent audio channel open all the time. Add them to `ignore_output_processes` in
-  `~/.config/kokoro-voice/config.json`; their microphone use still counts.
+- **Only real sound counts.** Many apps keep a silent audio channel open (a Discord tab in Safari, dictation apps).
+  A quick volume check (0.25 s) ignores those. It needs the **System Audio Recording** permission, which the installer
+  asks for once; it only measures volume and records nothing.
+- `kokoro --audio-check` shows which apps count as "using audio" right now, and which are open but silent.
+- To always ignore an app's output, add it to `ignore_output_processes` in `~/.config/kokoro-voice/config.json`; its
+  microphone use still counts.
 - To always speak, set `"when_other_audio": "play"`.
 
 ## Which terminals
@@ -153,7 +157,7 @@ Measured on an M-series Mac:
 | Something isn't working | `voicekit doctor`: it names each failing part and how to fix it |
 | Hotkeys don't respond | Allow Hammerspoon in Accessibility, then open Hammerspoon → Reload Config |
 | No briefing after a reply | Restart that Claude session. Then run `cvoice status`: Claude's voice may be muted (⌃⌥V) |
-| Messages never play | `kokoro --audio-check`: an app may be holding audio open. Add it to `ignore_output_processes` |
+| Messages never play | `kokoro --audio-check`. If it says the volume check is off, run `voicekit install` and allow System Audio Recording |
 | Right ⌘ shows "Didn't catch that" | Allow Hammerspoon to use the microphone (Privacy & Security → Microphone) |
 | A hook shows an error in Claude Code | `voicekit doctor` flags hooks pointing at missing files; `voicekit install` repairs them |
 | Logs | `~/.local/state/kokoro-voice/voiced.log` · `~/.local/state/listen-voice/listend.log` · `~/.local/state/claude-voice-kit/audit.log` |

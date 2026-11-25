@@ -176,5 +176,43 @@ class Installer(unittest.TestCase):
         self.assertEqual([h["command"] for e in out["hooks"]["Stop"] for h in e["hooks"]], ["node other.js"])
 
 
+class VolumeCheck(unittest.TestCase):
+    """An app with a silent audio channel open (e.g. a Discord tab in Safari) must not hold messages."""
+    def run_check(self, procs, levels, audible_db=-50):
+        import audio_activity as aa
+        saved = aa.processes, aa._command, aa._ancestors, aa.output_level
+        aa.processes = lambda: procs
+        aa._command = lambda pid: f"/Applications/App{pid}.app/Contents/MacOS/App{pid}"
+        aa._ancestors = lambda pid: {pid}
+        aa.output_level = lambda pids, ms=250: levels.get(tuple(pids))
+        try:
+            report = {}
+            names = [p["name"] for p in aa.other_audio_active(audible_db=audible_db, report=report)]
+            return names, [p["name"] for p in report.get("silent", [])]
+        finally:
+            aa.processes, aa._command, aa._ancestors, aa.output_level = saved
+
+    def test_silent_output_is_ignored(self):
+        self.assertEqual(self.run_check([{"pid": 1, "output": True, "input": False}], {(1,): -120.0}),
+                         ([], ["App1"]))
+
+    def test_loud_output_counts(self):
+        self.assertEqual(self.run_check([{"pid": 1, "output": True, "input": False}], {(1,): -6.0}), (["App1"], []))
+
+    def test_names_the_loud_app_when_several_are_open(self):
+        procs = [{"pid": 1, "output": True, "input": False}, {"pid": 2, "output": True, "input": False}]
+        self.assertEqual(self.run_check(procs, {(1, 2): -6.0, (1,): -120.0, (2,): -6.0}), (["App2"], ["App1"]))
+
+    def test_microphone_always_counts(self):
+        self.assertEqual(self.run_check([{"pid": 1, "output": False, "input": True}], {}), (["App1"], []))
+
+    def test_unmeasurable_counts_as_playing(self):
+        self.assertEqual(self.run_check([{"pid": 1, "output": True, "input": False}], {}), (["App1"], []))
+
+    def test_check_off_keeps_old_behaviour(self):
+        self.assertEqual(self.run_check([{"pid": 1, "output": True, "input": False}], {(1,): -120.0}, None),
+                         (["App1"], []))
+
+
 if __name__ == "__main__":
     unittest.main()
