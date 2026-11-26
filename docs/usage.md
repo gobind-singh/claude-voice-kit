@@ -142,6 +142,10 @@ Anything you ask for yourself (⌃⌥F, ⌃⌥K, replay, replies to voice comman
 ¹ `claude-voice` is `claude` plus a local voice channel. It uses Claude Code *Channels*, a research preview, so Claude
 Code asks you to confirm "local development" at each launch.
 
+## Dictation
+The kit is for talking *to agents*. For dictating text, use [Handy](https://handy.computer) (free, open source); it
+uses the same Parakeet model, which the kit reuses, so nothing is downloaded twice. macOS Dictation also works.
+
 ## Command-line tools
 | Command | Purpose |
 |---|---|
@@ -164,10 +168,14 @@ Code asks you to confirm "local development" at each launch.
 - **HUD:** a small dark pop-up near the bottom of the screen. Its colour shows the state: red = listening,
   amber = working, green = done, orange = problem, blue = info. It floats above every app, clicks pass
   through it, and it fades away by itself.
+
+  <img src="images/hud-listening.png" width="334" alt="Listening…"> <img src="images/hud-done.png" width="310" alt="Sent to api">
 - **Menu bar icon:** sound bars (crossed out when Claude's voice is off), a dot when hands-free is on, and the
   number of held messages. Click it for voice on/off, hands-free, each held message (Play, Approve / Deny, Dismiss),
   replay, stop, **Voice** (pick any Kokoro voice; you hear a short sample), **Speed**, and **Keyboard shortcuts**
   (choose one to change it).
+
+  <img src="images/menu.png" width="432" alt="The menu bar menu"> <img src="images/menu-shortcuts.png" width="320" alt="Keyboard shortcuts submenu">
 - **MacBook notch:** macOS hides menu bar icons that don't fit beside the notch, leftmost first. The first time, the kit
   places its icon directly left of the system icons (battery, Wi-Fi, Control Centre, clock), and hides Hammerspoon's own icon to save space
   (`"ui": {"hammerspoon_icon": true}` shows it again). To move the icon, hold ⌘ and drag it; your position is kept.

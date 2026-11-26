@@ -12,6 +12,7 @@ git clone https://github.com/gobind-singh/claude-voice-kit.git && cd claude-voic
 ./install.sh                                  # installs from this folder; re-run after changes to hooks/services
 python3 -m unittest discover -s tests         # unit tests (no audio, models or network)
 sh scripts/privacy-check.sh                   # no personal paths, e-mails or secrets
+./scripts/readme-images.sh                    # redraw the README images (needs Hammerspoon running)
 ```
 `docs/architecture.md` explains how the parts fit together and why they're built that way.
 

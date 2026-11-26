@@ -21,6 +21,8 @@
 - The menu bar icon is placed directly left of the system icons so the MacBook notch doesn't hide it, and
   Hammerspoon's own icon is hidden to save space.
 - Licence changed to MIT.
+- README shows the kit's own logo, icons, HUD pop-ups and menu, with a 3-step guide to using it. The images are
+  drawn from the kit's own code by `scripts/readme-images.sh`.
 
 ## 0.1.0: first release
 - Spoken briefings for every Claude Code reply, written by Claude Haiku and spoken with a local Kokoro voice.
