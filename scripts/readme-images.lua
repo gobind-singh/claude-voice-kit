@@ -114,7 +114,9 @@ return function(root, tmp)
   local function captureMenu(menuTable, file, done)
     local item = hs.menubar.new(false)
     item:setMenu(menuTable)
-    local helper = hs.task.new(tmp .. "/menucap", function()
+    local helper = hs.task.new(tmp .. "/menucap", function(_, _, stderr)
+      local f = io.open(tmp .. "/menucap.log", "a")
+      if f then f:write(stderr or ""); f:close() end
       hs.timer.doAfter(1.5, done)                    -- let the closed menu fade out first
     end, { tostring(hs.processInfo.processID), OUT .. "/" .. file })
     helper:start()

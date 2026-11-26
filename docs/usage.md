@@ -142,6 +142,10 @@ Anything you ask for yourself (⌃⌥F, ⌃⌥K, replay, replies to voice comman
 ¹ `claude-voice` is `claude` plus a local voice channel. It uses Claude Code *Channels*, a research preview, so Claude
 Code asks you to confirm "local development" at each launch.
 
+## Dictation
+The kit is for talking *to agents*. For dictating text, use [Handy](https://handy.computer) (free, open source); it
+uses the same Parakeet model, which the kit reuses, so nothing is downloaded twice. macOS Dictation also works.
+
 ## Command-line tools
 | Command | Purpose |
 |---|---|
